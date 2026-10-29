@@ -12,7 +12,9 @@ import {
   type Project,
   type Task,
   type ClientRecord,
+  type Employee,
   type ActivityLog,
+  type SystemRole,
 } from '../src/data.ts';
 
 // Paths to the SQLite database file and schema definition
@@ -162,8 +164,34 @@ export function seedIfEmpty(db: DatabaseSync, forceReset = false) {
   }
 }
 
+// Parse kWp and kWh numbers from an estimated power string like "10.0 kWp + 15 kWh"
+function parsePowerAndBattery(estimatedPower?: string): { powerKwp: number; batteryKwh: number } {
+  if (!estimatedPower) return { powerKwp: 9.8, batteryKwh: 10 };
+  const kwpMatch = estimatedPower.match(/([\d.]+)\s*kWp/i);
+  const kwhMatch = estimatedPower.match(/([\d.]+)\s*kWh/i);
+  return {
+    powerKwp: kwpMatch ? Number(kwpMatch[1]) : 9.8,
+    batteryKwh: kwhMatch ? Number(kwhMatch[1]) : 10,
+  };
+}
+
 // Read all tables from SQLite and map column names to frontend TypeScript interfaces
 export function getBootstrapSnapshot(db: DatabaseSync) {
+  const userRows = db.prepare('SELECT * FROM users ORDER BY id ASC').all() as Record<string, unknown>[];
+  const users: Employee[] = userRows.length
+    ? userRows.map(r => ({
+        id: Number(r.id),
+        name: String(r.name),
+        email: String(r.email),
+        systemRole: String(r.role) as SystemRole,
+        role: String(r.title),
+        department: String(r.department),
+        region: String(r.region),
+        workload: Number(r.workload),
+        color: String(r.color),
+      }))
+    : employees;
+
   const instRows = db.prepare('SELECT * FROM installations ORDER BY id DESC').all() as Record<string, unknown>[];
   const projects: Project[] = instRows.map(r => ({
     id: Number(r.id),
@@ -243,7 +271,7 @@ export function getBootstrapSnapshot(db: DatabaseSync) {
       file: 'database/oze_crm.sqlite',
       tables: ['users', 'clients', 'installations', 'leads', 'calendar_events', 'activity_logs'],
       counts: {
-        users: employees.length,
+        users: users.length,
         clients: clients.length,
         installations: projects.length,
         leads: tasks.length,
@@ -254,7 +282,7 @@ export function getBootstrapSnapshot(db: DatabaseSync) {
     clients,
     events,
     activities,
-    users: employees,
+    users,
   };
 }
 
@@ -398,17 +426,80 @@ export function ozeSqliteApiPlugin(): Plugin {
               t.estimatedPower || '9.8 kWp + 10 kWh'
             );
 
-            database
-              .prepare(
-                'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
-              )
-              .run(
-                t.actor || t.assignee || 'Aleksander Morawski',
-                `zmienił etap zadania/leada na: ${t.status}`,
-                t.name,
-                'Przed chwilą',
-                'purple'
-              );
+            // Automated Lead-to-Installation Funnel Trigger:
+            // When a lead reaches 'Umowa podpisana (Wygrana)' or 'Zrealizowane', automatically create an OZE installation in SQLite if not already created
+            if (t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane') {
+              const convertedName = t.name.replace(/^Lead(\s*B2B|\s*D2D)?:\s*/i, '');
+              const existing = database
+                .prepare('SELECT id FROM installations WHERE name = ?')
+                .get(convertedName) as { id?: number } | undefined;
+
+              if (!existing) {
+                const { powerKwp, batteryKwh } = parsePowerAndBattery(t.estimatedPower);
+                const clientRow = database
+                  .prepare('SELECT * FROM clients WHERE name = ? LIMIT 1')
+                  .get(t.project) as Record<string, unknown> | undefined;
+                const osdOp = clientRow?.osd ? String(clientRow.osd) : 'PGE';
+                const voiv = clientRow?.voivodeship ? String(clientRow.voivodeship) : 'Mazowieckie';
+                const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
+
+                database
+                  .prepare(
+                    `INSERT INTO installations (
+                      id, name, client, manager, status, priority, start_date, deadline, progress,
+                      color, initials, system_type, power_kwp, battery_kwh, osd_operator,
+                      subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                  )
+                  .run(
+                    Date.now(),
+                    convertedName,
+                    t.project,
+                    t.assignee,
+                    'Audyt i projekt',
+                    t.priority,
+                    '24 paź 2024',
+                    '25 lis 2024',
+                    15,
+                    'blue',
+                    convertedName.slice(0, 2).toUpperCase(),
+                    powerKwp > 20 ? 'Fotowoltaika B2B + BESS' : 'PV + Magazyn energii',
+                    powerKwp,
+                    batteryKwh,
+                    osdOp,
+                    powerKwp > 20 ? 'Brak (B2B)' : 'Mój Prąd 6.0',
+                    'W przygotowaniu',
+                    'Dachówka ceramiczna',
+                    `${estPrice.toLocaleString('pl-PL')} PLN`,
+                    'Ekipa Mazowsze-1',
+                    voiv
+                  );
+
+                database
+                  .prepare(
+                    'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+                  )
+                  .run(
+                    t.actor || t.assignee,
+                    'podpisał umowę — automatycznie utworzono realizację OZE',
+                    convertedName,
+                    'Przed chwilą',
+                    'green'
+                  );
+              }
+            } else {
+              database
+                .prepare(
+                  'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+                )
+                .run(
+                  t.actor || t.assignee || 'Aleksander Morawski',
+                  `zmienił etap leada na: ${t.status}`,
+                  t.name,
+                  'Przed chwilą',
+                  'purple'
+                );
+            }
 
             res.end(JSON.stringify(getBootstrapSnapshot(database)));
             return;
@@ -459,6 +550,13 @@ export function ozeSqliteApiPlugin(): Plugin {
                 'teal'
               );
 
+            res.end(JSON.stringify(getBootstrapSnapshot(database)));
+            return;
+          }
+
+          if (req.method === 'POST' && url === '/api/db/users') {
+            const u = (await readJsonBody(req)) as { id: number; systemRole: SystemRole; actor?: string };
+            database.prepare('UPDATE users SET role = ? WHERE id = ?').run(u.systemRole, u.id);
             res.end(JSON.stringify(getBootstrapSnapshot(database)));
             return;
           }

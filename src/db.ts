@@ -9,6 +9,7 @@ import {
   type ClientRecord,
   type Employee,
   type ActivityLog,
+  type SystemRole,
 } from './data';
 
 // Snapshot structure returned by the SQLite Data Layer
@@ -32,7 +33,18 @@ export type DatabaseSnapshot = {
   users: Employee[];
 };
 
-const STORAGE_KEY = 'sm_oze_sqlite_cache_v1';
+const STORAGE_KEY = 'sm_oze_sqlite_cache_v2';
+
+// Parse kWp and kWh numbers from an estimated power string like "10.0 kWp + 15 kWh"
+function parsePowerAndBattery(estimatedPower?: string): { powerKwp: number; batteryKwh: number } {
+  if (!estimatedPower) return { powerKwp: 9.8, batteryKwh: 10 };
+  const kwpMatch = estimatedPower.match(/([\d.]+)\s*kWp/i);
+  const kwhMatch = estimatedPower.match(/([\d.]+)\s*kWh/i);
+  return {
+    powerKwp: kwpMatch ? Number(kwpMatch[1]) : 9.8,
+    batteryKwh: kwhMatch ? Number(kwhMatch[1]) : 10,
+  };
+}
 
 // Build fallback snapshot from local cache or initial seed data
 function getLocalFallbackSnapshot(): DatabaseSnapshot {
@@ -130,7 +142,7 @@ export const DataLayer = {
     return updated;
   },
 
-  // Insert or update a sales lead / audit task in SQLite
+  // Insert or update a sales lead / audit task in SQLite (with automatic funnel conversion on contract signing)
   async saveLead(task: Task, actor?: string): Promise<DatabaseSnapshot> {
     try {
       const res = await fetch('/api/db/leads', {
@@ -152,18 +164,57 @@ export const DataLayer = {
     const tasks = exists
       ? current.tasks.map(x => (x.id === task.id ? task : x))
       : [task, ...current.tasks];
+
+    let projects = current.projects;
+    let actionMessage = `zmienił etap leada na: ${task.status}`;
+
+    if (task.status === 'Umowa podpisana (Wygrana)' || task.status === 'Zrealizowane') {
+      const convertedName = task.name.replace(/^Lead(\s*B2B|\s*D2D)?:\s*/i, '');
+      const alreadyExists = projects.some(p => p.name === convertedName);
+      if (!alreadyExists) {
+        const { powerKwp, batteryKwh } = parsePowerAndBattery(task.estimatedPower);
+        const clientMatch = current.clients.find(c => c.name === task.project);
+        const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
+        const newInstallation: Project = {
+          id: Date.now(),
+          name: convertedName,
+          client: task.project,
+          manager: task.assignee,
+          status: 'Audyt i projekt',
+          priority: task.priority,
+          start: '24 paź 2024',
+          deadline: '25 lis 2024',
+          progress: 15,
+          color: 'blue',
+          initials: convertedName.slice(0, 2).toUpperCase(),
+          systemType: powerKwp > 20 ? 'Fotowoltaika B2B + BESS' : 'PV + Magazyn energii',
+          powerKwp,
+          batteryKwh,
+          osdOperator: clientMatch?.osd || 'PGE',
+          subsidyProgram: powerKwp > 20 ? 'Brak (B2B)' : 'Mój Prąd 6.0',
+          subsidyStatus: 'W przygotowaniu',
+          roofType: 'Dachówka ceramiczna',
+          contractValue: `${estPrice.toLocaleString('pl-PL')} PLN`,
+          installTeam: 'Ekipa Mazowsze-1',
+          voivodeship: clientMatch?.voivodeship || 'Mazowieckie',
+        };
+        projects = [newInstallation, ...projects];
+        actionMessage = 'podpisał umowę — automatycznie utworzono realizację OZE';
+      }
+    }
+
     const activities: ActivityLog[] = [
       {
         id: Date.now(),
         userName: actor || task.assignee,
-        action: `zmienił etap zadania/leada na: ${task.status}`,
+        action: actionMessage,
         target: task.name,
         timeLabel: 'Przed chwilą',
-        color: 'purple',
+        color: 'green',
       },
       ...current.activities.slice(0, 11),
     ];
-    const updated = { ...current, tasks, activities };
+    const updated = { ...current, tasks, projects, activities };
     saveLocalCache(updated);
     return updated;
   },
@@ -191,6 +242,30 @@ export const DataLayer = {
       ? current.clients.map(x => (x.id === client.id ? client : x))
       : [client, ...current.clients];
     const updated = { ...current, clients };
+    saveLocalCache(updated);
+    return updated;
+  },
+
+  // Update a user's RBAC role ('admin' | 'manager' | 'salesman') in SQLite
+  async updateUserRole(id: number, systemRole: SystemRole, actor?: string): Promise<DatabaseSnapshot> {
+    try {
+      const res = await fetch('/api/db/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, systemRole, actor }),
+      });
+      if (res.ok) {
+        const snapshot = (await res.json()) as DatabaseSnapshot;
+        saveLocalCache(snapshot);
+        return snapshot;
+      }
+    } catch {
+      // Fallback
+    }
+
+    const current = getLocalFallbackSnapshot();
+    const users = current.users.map(u => (u.id === id ? { ...u, systemRole } : u));
+    const updated = { ...current, users };
     saveLocalCache(updated);
     return updated;
   },

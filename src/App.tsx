@@ -3,31 +3,32 @@ import {
   initialProjects,
   initialTasks,
   initialClients,
-  employees,
+  employees as initialEmployees,
   initialActivities,
   type Project,
   type Task,
   type ClientRecord,
+  type Employee,
   type ActivityLog,
+  type SystemRole,
 } from './data';
 import { DataLayer } from './db';
 import { Icon, Button, Avatar, Badge, Progress, Section } from './ui';
 
-// Navigation pages tailored for a Polish OZE (PV, Battery Storage, Eco-Homes) CRM & FSM MVP
-const pages = [
-  'Przegląd',
-  'Realizacje OZE',
-  'Leady i Sprzedaż',
-  'Dotacje i OSD',
-  'Klienci i Obiekty',
-  'Ekipy i Handlowcy',
-  'Grafik Montaży',
-  'Raporty OZE',
-  'Ustawienia',
+// Full list of navigation pages with their icons and allowed RBAC roles
+const allPages: { name: string; icon: string; roles: SystemRole[] }[] = [
+  { name: 'Przegląd', icon: 'grid', roles: ['admin', 'manager', 'salesman'] },
+  { name: 'Realizacje OZE', icon: 'folder', roles: ['admin', 'manager', 'salesman'] },
+  { name: 'Leady i Sprzedaż', icon: 'check', roles: ['admin', 'manager', 'salesman'] },
+  { name: 'Dotacje i OSD', icon: 'alert', roles: ['admin', 'manager'] },
+  { name: 'Klienci i Obiekty', icon: 'people', roles: ['admin', 'manager', 'salesman'] },
+  { name: 'Ekipy i Handlowcy', icon: 'people', roles: ['admin', 'manager'] },
+  { name: 'Grafik Montaży', icon: 'calendar', roles: ['admin', 'manager', 'salesman'] },
+  { name: 'Raporty OZE', icon: 'chart', roles: ['admin', 'manager'] },
+  { name: 'Ustawienia', icon: 'settings', roles: ['admin'] },
 ];
-const icons = ['grid', 'folder', 'check', 'alert', 'people', 'people', 'calendar', 'chart', 'settings'];
 
-// OZE installation pipeline stages (Operations / FSM funnel)
+// OZE installation pipeline stages (Operations / FSM funnel managed by Manager & Admin)
 const projectStatuses = [
   'Audyt i projekt',
   'Kompletacja sprzętu',
@@ -36,8 +37,13 @@ const projectStatuses = [
   'Odebrane',
 ];
 
-// Sales & technical task funnel stages
-const taskStatuses = ['Nowy lead', 'Audyt / W toku', 'Oferta / Weryfikacja', 'Zrealizowane'];
+// Sales & technical lead funnel stages (Salesman funnel -> triggers Installation on 'Umowa podpisana (Wygrana)')
+const taskStatuses = [
+  'Nowy lead',
+  'Audyt / W toku',
+  'Oferta / Weryfikacja',
+  'Umowa podpisana (Wygrana)',
+];
 
 // Subsidy & OSD workflow statuses
 const subsidyStatuses: Project['subsidyStatus'][] = [
@@ -56,9 +62,18 @@ const subsidyPrograms: Project['subsidyProgram'][] = [
   'Brak (B2B)',
 ];
 
+// Polish labels for RBAC roles
+const roleLabels: Record<SystemRole, string> = {
+  admin: 'Admin (Dyrektor)',
+  manager: 'Manager (Koordynator)',
+  salesman: 'Salesman (Handlowiec)',
+};
+
 export default function App() {
   // Active navigation and core SQLite-backed database state
   const [page, setPage] = useState('Przegląd');
+  const [users, setUsers] = useState<Employee[]>(initialEmployees);
+  const [currentUserId, setCurrentUserId] = useState<number>(1); // Default: Aleksander Morawski (Admin)
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [clients, setClients] = useState<ClientRecord[]>(initialClients);
@@ -73,14 +88,17 @@ export default function App() {
   const [deadline, setDeadline] = useState('Wszystkie operatorzy OSD');
   const [view, setView] = useState('table');
 
-  // Modal dialog state
+  // Modal dialog state & OZE bill calculator state
   const [modal, setModal] = useState<string | null>(null);
   const [editing, setEditing] = useState<Project | Task | null>(null);
+  const [billPln, setBillPln] = useState<number>(450);
+  const [calcKwp, setCalcKwp] = useState<number>(9.8);
+  const [calcKwh, setCalcKwh] = useState<number>(10);
 
   // Drill-down detail views state
   const [detail, setDetail] = useState<Project | null>(null);
   const [clientDetail, setClientDetail] = useState<ClientRecord | null>(null);
-  const [employee, setEmployee] = useState<(typeof employees)[number] | null>(null);
+  const [employee, setEmployee] = useState<Employee | null>(null);
   const [tab, setTab] = useState('Przegląd');
 
   // Dropdown menus, toast alerts and calendar state
@@ -91,6 +109,13 @@ export default function App() {
   const [week, setWeek] = useState(false);
   const [events, setEvents] = useState<{ name: string; date: string }[]>([]);
 
+  // Active logged-in user and their RBAC role ('admin' | 'manager' | 'salesman')
+  const currentUser = users.find(u => u.id === currentUserId) || users[0];
+  const currentRole: SystemRole = currentUser.systemRole;
+
+  // Allowed navigation pages for the current RBAC role
+  const allowedPages = allPages.filter(p => p.roles.includes(currentRole));
+
   // Apply snapshot received from the SQLite DataLayer
   const applySnapshot = (snap: Awaited<ReturnType<typeof DataLayer.bootstrap>>) => {
     setProjects(snap.projects);
@@ -98,6 +123,7 @@ export default function App() {
     setClients(snap.clients);
     setEvents(snap.events);
     setActivities(snap.activities);
+    if (snap.users?.length) setUsers(snap.users);
     setDbEngine(`${snap.meta.engine} · ${snap.meta.file}`);
   };
 
@@ -109,7 +135,29 @@ export default function App() {
   // Display temporary toast message
   const notify = (text: string) => {
     setToast(text);
-    window.setTimeout(() => setToast(''), 3500);
+    window.setTimeout(() => setToast(''), 4000);
+  };
+
+  // Switch active user / RBAC role and redirect if current page is restricted
+  const switchUser = (user: Employee) => {
+    setCurrentUserId(user.id);
+    setDetail(null);
+    setClientDetail(null);
+    setEmployee(null);
+    setMenu('');
+    const canAccessCurrentPage = allPages
+      .find(p => p.name === page)
+      ?.roles.includes(user.systemRole);
+    if (!canAccessCurrentPage) {
+      setPage('Przegląd');
+    }
+    notify(`Przełączono użytkownika: ${user.name} · Rola: ${roleLabels[user.systemRole]}`);
+  };
+
+  // Switch quick role button (Admin / Manager / Salesman)
+  const switchQuickRole = (role: SystemRole) => {
+    const targetUser = users.find(u => u.systemRole === role);
+    if (targetUser) switchUser(targetUser);
   };
 
   // Switch between main modules and reset active filters
@@ -127,19 +175,48 @@ export default function App() {
     setMenu('');
   };
 
-  // Open creation or edit modal
+  // Open creation or edit modal and initialize calculator defaults
   const open = (type: string, record?: Project | Task) => {
     setEditing(record || null);
+    if (record && 'powerKwp' in record) {
+      setCalcKwp(record.powerKwp);
+      setCalcKwh(record.batteryKwh);
+    } else {
+      setCalcKwp(9.8);
+      setCalcKwh(10);
+    }
     setModal(type);
     setMenu('');
   };
 
-  // Dynamic OZE totals calculated from active installations
-  const totalPowerKwp = projects.reduce((sum, p) => sum + p.powerKwp, 0).toFixed(1);
-  const totalBatteryKwh = projects.reduce((sum, p) => sum + p.batteryKwh, 0);
+  // RBAC Data Isolation:
+  // - Admin & Manager see all company installations, leads, and clients.
+  // - Salesman sees only their own clients, their own leads, and installations for their clients (RODO & commercial protection).
+  const roleScopedClients =
+    currentRole === 'salesman'
+      ? clients.filter(c => c.ownerName === currentUser.name)
+      : clients;
+
+  const roleScopedTasks =
+    currentRole === 'salesman'
+      ? tasks.filter(t => t.assignee === currentUser.name)
+      : tasks;
+
+  const roleScopedProjects =
+    currentRole === 'salesman'
+      ? projects.filter(
+          p =>
+            p.manager === currentUser.name ||
+            roleScopedClients.some(c => c.name === p.client)
+        )
+      : projects;
+
+  // Dynamic OZE totals calculated from role-scoped installations
+  const totalPowerKwp = roleScopedProjects.reduce((sum, p) => sum + p.powerKwp, 0).toFixed(1);
+  const totalBatteryKwh = roleScopedProjects.reduce((sum, p) => sum + p.batteryKwh, 0);
 
   // Filter OZE installations by search, stage, priority, coordinator, and OSD grid operator
-  const visibleProjects = projects
+  const visibleProjects = roleScopedProjects
     .filter(p => {
       const matchSearch = `${p.name} ${p.client} ${p.manager} ${p.systemType} ${p.voivodeship} ${p.osdOperator}`
         .toLowerCase()
@@ -153,7 +230,7 @@ export default function App() {
     .sort((a, b) => (sort ? a.name.localeCompare(b.name, 'pl') : a.id - b.id));
 
   // Filter leads and tasks by search, priority, and stage
-  const visibleTasks = tasks.filter(t => {
+  const visibleTasks = roleScopedTasks.filter(t => {
     const matchSearch = `${t.name} ${t.project} ${t.assignee} ${t.leadSource || ''}`
       .toLowerCase()
       .includes(search.toLowerCase());
@@ -162,40 +239,81 @@ export default function App() {
     return matchSearch && matchPriority && matchFilter;
   });
 
-  // Update status of an installation in SQLite
+  // Update status of an installation in SQLite (restricted for Salesman)
   const changeProjectStatus = async (id: number, status: string) => {
+    if (currentRole === 'salesman') {
+      notify('Tylko Manager lub Admin może zmieniać etap techniczny realizacji montażowej.');
+      return;
+    }
     const target = projects.find(p => p.id === id);
     if (!target) return;
     const updated: Project = {
       ...target,
       status,
-      progress: status === 'Odebrane' ? 100 : status === 'Zgłoszenie OSD / Dotacja' ? 90 : status === 'Montaż w toku' ? 70 : target.progress,
+      progress:
+        status === 'Odebrane'
+          ? 100
+          : status === 'Zgłoszenie OSD / Dotacja'
+            ? 90
+            : status === 'Montaż w toku'
+              ? 70
+              : status === 'Kompletacja sprzętu'
+                ? 45
+                : 20,
     };
-    const snap = await DataLayer.saveInstallation(updated);
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name);
     applySnapshot(snap);
     if (detail?.id === id) setDetail(updated);
   };
 
-  // Update status of a lead/task in SQLite
+  // Update status of a lead/task in SQLite; triggers automatic installation creation when signed!
   const changeTask = async (id: number, status: string) => {
     const target = tasks.find(x => x.id === id);
     if (!target) return;
+    const prevCount = projects.length;
     const updated: Task = { ...target, status };
-    const snap = await DataLayer.saveLead(updated);
+    const snap = await DataLayer.saveLead(updated, currentUser.name);
     applySnapshot(snap);
+
+    if (status === 'Umowa podpisana (Wygrana)' || status === 'Zrealizowane') {
+      if (snap.projects.length > prevCount) {
+        notify(
+          'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE oraz wniosek w Dotacje i OSD.'
+        );
+      } else {
+        notify(`Zaktualizowano status leada: ${status}`);
+      }
+    }
   };
 
   // Update subsidy / OSD status for an installation in SQLite
   const changeSubsidyStatus = async (id: number, subsidyStatus: Project['subsidyStatus']) => {
+    if (currentRole === 'salesman') {
+      notify('Statusy wniosków NFOŚiGW i zgłoszeń OSD zatwierdza Manager lub Dział Dotacji.');
+      return;
+    }
     const target = projects.find(p => p.id === id);
     if (!target) return;
     const updated: Project = { ...target, subsidyStatus };
-    const snap = await DataLayer.saveInstallation(updated);
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name);
     applySnapshot(snap);
     if (detail?.id === id) {
       setDetail(updated);
     }
     notify(`Zapisano w SQLite — status dotacji/OSD: ${subsidyStatus}`);
+  };
+
+  // Calculate recommended PV kWp and Battery kWh from monthly electricity bill in PLN
+  const recalculateFromBill = (monthlyPln: number) => {
+    setBillPln(monthlyPln);
+    const annualKwh = (monthlyPln * 12) / 1.15;
+    const recommendedKwp = Math.max(3.5, Math.round((annualKwh / 1000) * 1.15 * 10) / 10);
+    const recommendedBattery = recommendedKwp <= 6 ? 10 : recommendedKwp <= 12 ? 15 : 20;
+    setCalcKwp(recommendedKwp);
+    setCalcKwh(recommendedBattery);
+    notify(
+      `Kalkulator OZE: Dla rachunku ${monthlyPln} PLN/mies. dobrano ${recommendedKwp} kWp PV + ${recommendedBattery} kWh magazynu.`
+    );
   };
 
   // Render OZE installations table
@@ -214,7 +332,7 @@ export default function App() {
             <th>Etap realizacji</th>
             {full && <th>Operator OSD / Dotacja</th>}
             <th>Postęp prac</th>
-            {full && <th>Ekipa monterska</th>}
+            {full && <th>Koordynator / Ekipa</th>}
             <th>Termin montażu</th>
             <th />
           </tr>
@@ -258,8 +376,8 @@ export default function App() {
               {full && (
                 <td>
                   <div className="person">
-                    <Avatar name={p.manager} small color={employees.find(e => e.name === p.manager)?.color} />
-                    {p.installTeam}
+                    <Avatar name={p.manager} small color={users.find(e => e.name === p.manager)?.color} />
+                    {p.manager} ({p.installTeam})
                   </div>
                 </td>
               )}
@@ -283,8 +401,12 @@ export default function App() {
       {!items.length && (
         <div className="empty">
           <Icon name="search" size={28} />
-          <h3>Nie znaleziono realizacji OZE</h3>
-          <p>Spróbuj zmienić parametry wyszukiwania lub wyczyść filtry.</p>
+          <h3>Brak przypisanych realizacji OZE</h3>
+          <p>
+            {currentRole === 'salesman'
+              ? 'Podpisz umowę na swoim leadzie, aby automatycznie utworzyć realizację montażową.'
+              : 'Spróbuj zmienić parametry wyszukiwania lub wyczyść filtry.'}
+          </p>
           <Button
             onClick={() => {
               setSearch('');
@@ -304,28 +426,39 @@ export default function App() {
   // Render list of sales leads & technical audit tasks
   const taskList = (list: Task[]) => (
     <div className="task-list">
-      {list.map(t => (
-        <div className={`task-row ${t.status === 'Zrealizowane' ? 'completed' : ''}`} key={t.id}>
-          <input
-            type="checkbox"
-            aria-label={`Oznacz jako zrealizowane: ${t.name}`}
-            checked={t.status === 'Zrealizowane'}
-            onChange={e => changeTask(t.id, e.target.checked ? 'Zrealizowane' : 'Nowy lead')}
-          />
-          <div className="task-copy">
-            <button onClick={() => open('Zadanie', t)}>{t.name}</button>
-            <span>
-              {t.project} {t.estimatedPower ? `· ${t.estimatedPower}` : ''}
+      {list.map(t => {
+        const isSigned =
+          t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane';
+        return (
+          <div className={`task-row ${isSigned ? 'completed' : ''}`} key={t.id}>
+            <input
+              type="checkbox"
+              aria-label={`Podpisz umowę: ${t.name}`}
+              checked={isSigned}
+              onChange={e =>
+                changeTask(
+                  t.id,
+                  e.target.checked ? 'Umowa podpisana (Wygrana)' : 'Nowy lead'
+                )
+              }
+            />
+            <div className="task-copy">
+              <button onClick={() => open('Zadanie', t)}>{t.name}</button>
+              <span>
+                {t.project} {t.estimatedPower ? `· ${t.estimatedPower}` : ''} · Doradca: {t.assignee}
+              </span>
+            </div>
+            <span className={`priority ${t.priority.toLowerCase()}`}>
+              <Icon name="flag" size={12} />
+              {t.priority}
             </span>
+            <span className={`task-date ${t.due === 'Po terminie' ? 'overdue-text' : ''}`}>{t.due}</span>
           </div>
-          <span className={`priority ${t.priority.toLowerCase()}`}>
-            <Icon name="flag" size={12} />
-            {t.priority}
-          </span>
-          <span className={`task-date ${t.due === 'Po terminie' ? 'overdue-text' : ''}`}>{t.due}</span>
-        </div>
-      ))}
-      {!list.length && <div className="empty">Brak zadań lub leadów w tym widoku. Dodaj nową pozycję, aby rozpocząć.</div>}
+        );
+      })}
+      {!list.length && (
+        <div className="empty">Brak leadów w tym widoku. Dodaj nowy lead, aby rozpocząć proces sprzedaży.</div>
+      )}
     </div>
   );
 
@@ -358,11 +491,11 @@ export default function App() {
             <option key={x}>{x}</option>
           ))}
         </select>
-        {kind === 'projects' && (
+        {kind === 'projects' && currentRole !== 'salesman' && (
           <>
             <select aria-label="Filtruj wg koordynatora" value={manager} onChange={e => setManager(e.target.value)}>
               <option>Wszyscy koordynatorzy</option>
-              {employees.slice(0, 4).map(e => (
+              {users.map(e => (
                 <option key={e.name}>{e.name}</option>
               ))}
             </select>
@@ -406,7 +539,9 @@ export default function App() {
             </p>
             <button
               onClick={() => {
-                const matched = projects.find(p => p.name === item.target || p.client === item.target);
+                const matched = roleScopedProjects.find(
+                  p => p.name === item.target || p.client === item.target
+                );
                 if (matched) {
                   setDetail(matched);
                   setPage('Realizacje OZE');
@@ -426,7 +561,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* Left sidebar navigation */}
+      {/* Left sidebar navigation dynamically filtered by RBAC role */}
       <aside className="sidebar">
         <button className="brand" onClick={() => navigate('Przegląd')}>
           <span className="brand-mark">
@@ -438,26 +573,38 @@ export default function App() {
           <Icon name="down" size={15} />
         </button>
 
-        <div className="nav-caption">SYSTEM OPERACYJNY OZE</div>
+        <div className="nav-caption">
+          PANEL: {currentRole.toUpperCase()} ({allowedPages.length} MODUŁÓW)
+        </div>
         <nav>
-          {pages.slice(0, 8).map((p, i) => (
-            <button
-              key={p}
-              className={`nav-item ${page === p ? 'selected' : ''}`}
-              onClick={() => navigate(p)}
-            >
-              <Icon name={icons[i]} />
-              <span>{p}</span>
-              {p === 'Leady i Sprzedaż' && (
-                <span className="nav-count">{tasks.filter(t => t.status !== 'Zrealizowane').length}</span>
-              )}
-              {p === 'Dotacje i OSD' && (
-                <span className="nav-count">
-                  {projects.filter(pr => pr.subsidyStatus !== 'Wypłacono').length}
-                </span>
-              )}
-            </button>
-          ))}
+          {allowedPages
+            .filter(p => p.name !== 'Ustawienia')
+            .map(p => (
+              <button
+                key={p.name}
+                className={`nav-item ${page === p.name ? 'selected' : ''}`}
+                onClick={() => navigate(p.name)}
+              >
+                <Icon name={p.icon} />
+                <span>{p.name}</span>
+                {p.name === 'Leady i Sprzedaż' && (
+                  <span className="nav-count">
+                    {
+                      roleScopedTasks.filter(
+                        t =>
+                          t.status !== 'Umowa podpisana (Wygrana)' &&
+                          t.status !== 'Zrealizowane'
+                      ).length
+                    }
+                  </span>
+                )}
+                {p.name === 'Dotacje i OSD' && (
+                  <span className="nav-count">
+                    {roleScopedProjects.filter(pr => pr.subsidyStatus !== 'Wypłacono').length}
+                  </span>
+                )}
+              </button>
+            ))}
         </nav>
 
         <div className="sidebar-bottom">
@@ -478,27 +625,40 @@ export default function App() {
 
           <div className="workspace-note">
             <span className="note-symbol">
-              <Icon name="sun" size={17} />
+              <Icon name="people" size={17} />
             </span>
-            <strong>Baza danych SQLite aktywna.</strong>
-            <p>6 tabel relacyjnych · Zapis w czasie rzeczywistym</p>
+            <strong>Tryb: {roleLabels[currentRole]}</strong>
+            <p>
+              {currentRole === 'salesman'
+                ? 'Widzisz tylko własne leady i klientów (izolacja RODO).'
+                : currentRole === 'manager'
+                  ? 'Zarządzasz montażami, ekipami oraz wnioskami OSD.'
+                  : 'Pełny dostęp administracyjny do wszystkich oddziałów.'}
+            </p>
             <button
               onClick={() => {
-                navigate('Ustawienia');
-                notify(`Połączono z lokalną bazą: ${dbEngine}`);
+                const nextRole: SystemRole =
+                  currentRole === 'admin'
+                    ? 'manager'
+                    : currentRole === 'manager'
+                      ? 'salesman'
+                      : 'admin';
+                switchQuickRole(nextRole);
               }}
             >
-              Status bazy SQL <Icon name="arrow" size={14} />
+              Przełącz rolę testową <Icon name="arrow" size={14} />
             </button>
           </div>
 
-          <button
-            className={`nav-item ${page === 'Ustawienia' ? 'selected' : ''}`}
-            onClick={() => navigate('Ustawienia')}
-          >
-            <Icon name="settings" />
-            <span>Ustawienia i Baza SQL</span>
-          </button>
+          {currentRole === 'admin' && (
+            <button
+              className={`nav-item ${page === 'Ustawienia' ? 'selected' : ''}`}
+              onClick={() => navigate('Ustawienia')}
+            >
+              <Icon name="settings" />
+              <span>Ustawienia i Baza SQL</span>
+            </button>
+          )}
 
           <button
             className="nav-item"
@@ -513,10 +673,10 @@ export default function App() {
             className="sidebar-profile"
             onClick={() => setMenu(menu === 'profile' ? '' : 'profile')}
           >
-            <Avatar name="Aleksander Morawski" />
+            <Avatar name={currentUser.name} color={currentUser.color} />
             <span>
-              <strong>Aleksander Morawski</strong>
-              <small>Dyrektor Operacyjny OZE</small>
+              <strong>{currentUser.name}</strong>
+              <small>{roleLabels[currentRole]}</small>
             </span>
             <Icon name="down" size={16} />
           </button>
@@ -525,12 +685,13 @@ export default function App() {
 
       {/* Main content area */}
       <div className="main-shell">
-        {/* Top bar */}
+        {/* Top bar with quick RBAC role switcher */}
         <header className="topbar">
           <div className="breadcrumb">
-            <span>SM-OZE Polska</span>
+            <span>SM-OZE</span>
             <span className="slash">/</span>
             <strong>{page}</strong>
+            <Badge>{currentRole.toUpperCase()}</Badge>
             {detail && (
               <>
                 <span>/</span>
@@ -540,6 +701,19 @@ export default function App() {
           </div>
 
           <div className="top-actions">
+            {/* Quick Role Switcher for testing Admin / Manager / Salesman views */}
+            <div className="view-toggle" aria-label="Przełącznik roli użytkownika">
+              {(['admin', 'manager', 'salesman'] as SystemRole[]).map(r => (
+                <button
+                  key={r}
+                  className={currentRole === r ? 'active' : ''}
+                  onClick={() => switchQuickRole(r)}
+                >
+                  {r === 'admin' ? 'Admin' : r === 'manager' ? 'Manager' : 'Salesman'}
+                </button>
+              ))}
+            </div>
+
             <div className="global-search">
               <Icon name="search" size={16} />
               <input
@@ -566,17 +740,18 @@ export default function App() {
               {menu === 'notifications' && (
                 <div className="dropdown notifications">
                   <h3>
-                    Powiadomienia OZE <span className="badge in-progress">3 nowe</span>
+                    Powiadomienia ({currentRole.toUpperCase()}){' '}
+                    <span className="badge in-progress">3 nowe</span>
                   </h3>
                   <p>PGE Dystrybucja potwierdziła wymianę licznika dwukierunkowego (Pruszków).</p>
                   <p>Wniosek Mój Prąd 6.0 dla klienta T. Mazur przeszedł weryfikację.</p>
-                  <p>Ekipa Małopolska-2 zgłosiła gotowość do odbioru pompy ciepła i PV.</p>
+                  <p>Nowy lead z kalkulatora WWW czeka na telefon doradcy.</p>
                   <Button
                     onClick={() => {
-                      navigate('Dotacje i OSD');
+                      navigate('Leady i Sprzedaż');
                     }}
                   >
-                    Przejdź do Dotacji i OSD <Icon name="arrow" size={14} />
+                    Przejdź do leadów <Icon name="arrow" size={14} />
                   </Button>
                 </div>
               )}
@@ -594,46 +769,51 @@ export default function App() {
               </Button>
               {menu === 'create' && (
                 <div className="dropdown">
-                  {[
-                    ['Realizacja', 'sun', 'Nowa realizacja OZE'],
-                    ['Zadanie', 'check', 'Nowy lead / audyt'],
-                    ['Klient', 'people', 'Nowy inwestor / klient'],
-                  ].map(([t, ic, label]) => (
-                    <button key={t} onClick={() => open(t)}>
-                      <Icon name={ic} />
-                      {label}
+                  {currentRole !== 'salesman' && (
+                    <button onClick={() => open('Realizacja')}>
+                      <Icon name="sun" />
+                      Nowa realizacja OZE
                     </button>
-                  ))}
+                  )}
+                  <button onClick={() => open('Zadanie')}>
+                    <Icon name="check" />
+                    Nowy lead / audyt
+                  </button>
+                  <button onClick={() => open('Klient')}>
+                    <Icon name="people" />
+                    Nowy inwestor / klient
+                  </button>
                 </div>
               )}
             </div>
 
             <button
               className="avatar-button"
-              aria-label="Menu profilu"
+              aria-label="Menu profilu i wybór pracownika"
               onClick={() => setMenu(menu === 'profile' ? '' : 'profile')}
             >
-              <Avatar name="Aleksander Morawski" />
+              <Avatar name={currentUser.name} color={currentUser.color} />
             </button>
           </div>
 
           {menu === 'profile' && (
             <div className="dropdown profile-dropdown">
-              <strong>Aleksander Morawski</strong>
-              <small>a.morawski@sm-oze.pl · Rola: Admin</small>
-              <button onClick={() => navigate('Ustawienia')}>
-                <Icon name="settings" />
-                Konfiguracja bazy SQLite
-              </button>
-              <button
-                onClick={() => {
-                  setMenu('');
-                  notify(`Aktywny silnik danych: ${dbEngine}`);
-                }}
-              >
-                <Icon name="people" />
-                Status warstwy danych
-              </button>
+              <strong>{currentUser.name}</strong>
+              <small>
+                {currentUser.email} · {roleLabels[currentRole]}
+              </small>
+              {users.map(u => (
+                <button key={u.id} onClick={() => switchUser(u)}>
+                  <Icon name="people" />
+                  {u.name} ({u.systemRole.toUpperCase()})
+                </button>
+              ))}
+              {currentRole === 'admin' && (
+                <button onClick={() => navigate('Ustawienia')}>
+                  <Icon name="settings" />
+                  Baza SQLite i Ustawienia
+                </button>
+              )}
             </div>
           )}
         </header>
@@ -644,29 +824,39 @@ export default function App() {
             <>
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow">CENTRUM DOWODZENIA OZE — POLSKA</div>
+                  <div className="eyebrow">
+                    PANEL ROLI: {roleLabels[currentRole].toUpperCase()} · REGION: {currentUser.region.toUpperCase()}
+                  </div>
                   <h1>
-                    Dzień dobry, Aleksander{' '}
+                    Dzień dobry, {currentUser.name.split(' ')[0]}{' '}
                     <span className="greeting-sun">
                       <Icon name="sun" size={24} />
                     </span>
                   </h1>
-                  <p>Bieżący status sprzedaży, audytów, magazynów energii i montaży z bazy SQLite.</p>
+                  <p>
+                    {currentRole === 'salesman'
+                      ? 'Twój osobisty lejek sprzedaży OZE, zaplanowane audyty oraz postęp instalacji Twoich klientów.'
+                      : currentRole === 'manager'
+                        ? 'Nadzór nad realizacjami montażowymi, kompletem sprzętu, ekipami i wnioskami OSD / NFOŚiGW.'
+                        : 'Pełny widok zarządczy firmy (300 pracowników): sprzedaż, realizacje OZE, dotacje i baza SQLite.'}
+                  </p>
                 </div>
                 <div className="today">
                   <Icon name="calendar" size={16} />
-                  Czwartek, 24 października 2024
+                  Zalogowany jako: {currentUser.name} ({currentRole.toUpperCase()})
                 </div>
               </div>
 
               <div className="quick-actions">
-                <Button onClick={() => open('Realizacja')}>
-                  <Icon name="plus" size={15} />
-                  Nowa instalacja OZE
-                </Button>
+                {currentRole !== 'salesman' && (
+                  <Button onClick={() => open('Realizacja')}>
+                    <Icon name="plus" size={15} />
+                    Nowa instalacja OZE
+                  </Button>
+                )}
                 <Button onClick={() => open('Zadanie')}>
                   <Icon name="plus" size={15} />
-                  Nowy lead / audyt
+                  Nowy lead + Kalkulator OZE
                 </Button>
                 <Button onClick={() => open('Klient')}>
                   <Icon name="plus" size={15} />
@@ -674,16 +864,47 @@ export default function App() {
                 </Button>
                 <span>
                   <span className="live-dot" />
-                  Silnik danych: {dbEngine} ({projects.length} instalacji, {tasks.length} leadów, {clients.length} klientów)
+                  Widok RBAC ({currentRole.toUpperCase()}): {roleScopedProjects.length} instalacji ·{' '}
+                  {roleScopedTasks.length} leadów · {roleScopedClients.length} klientów
                 </span>
               </div>
 
               <div className="kpi-grid">
                 {[
-                  ['Moc PV w realizacji', `${totalPowerKwp} kWp`, 'sun', '+18.4 kWp', 'względem września', 'blue'],
-                  ['Magazyny energii (BESS)', `${totalBatteryKwh} kWh`, 'folder', '+35 kWh', 'względem września', 'purple'],
-                  ['Wnioski Dotacje / OSD', `${projects.filter(p => p.subsidyStatus !== 'Wypłacono').length} w toku`, 'clock', '94%', 'skuteczności NFOŚiGW', 'orange'],
-                  ['Baza inwestorów (SQL)', `${clients.length} obiektów`, 'people', '+4', 'nowe umowy w tym tyg.', 'teal'],
+                  [
+                    currentRole === 'salesman' ? 'Twoja sprzedana moc PV' : 'Moc PV w realizacji',
+                    `${totalPowerKwp} kWp`,
+                    'sun',
+                    '+18.4 kWp',
+                    'w tym miesiącu',
+                    'blue',
+                  ],
+                  [
+                    currentRole === 'salesman' ? 'Twoje magazyny energii' : 'Magazyny energii (BESS)',
+                    `${totalBatteryKwh} kWh`,
+                    'folder',
+                    '+35 kWh',
+                    'w tym miesiącu',
+                    'purple',
+                  ],
+                  [
+                    currentRole === 'salesman' ? 'Aktywne leady handlowe' : 'Wnioski Dotacje / OSD',
+                    currentRole === 'salesman'
+                      ? `${roleScopedTasks.length} szans`
+                      : `${roleScopedProjects.filter(p => p.subsidyStatus !== 'Wypłacono').length} w toku`,
+                    'clock',
+                    '94%',
+                    'skuteczności konwersji',
+                    'orange',
+                  ],
+                  [
+                    currentRole === 'salesman' ? 'Twoi inwestorzy' : 'Baza inwestorów (SQL)',
+                    `${roleScopedClients.length} klientów`,
+                    'people',
+                    '+4',
+                    'nowe umowy w tym tyg.',
+                    'teal',
+                  ],
                 ].map(([label, count, icon, delta, desc, color]) => (
                   <div className="kpi-card" key={label}>
                     <div className="kpi-label">
@@ -696,13 +917,7 @@ export default function App() {
                       {count}
                       <span className={`sparkline ${color}`}>
                         <svg viewBox="0 0 100 30">
-                          <path
-                            d={
-                              label === 'Wnioski Dotacje / OSD'
-                                ? 'M0 18 12 15 24 16 37 12 48 13 62 9 74 10 87 6 100 5'
-                                : 'M0 27 12 21 24 24 37 14 48 18 62 9 74 13 87 4 100 6'
-                            }
-                          />
+                          <path d="M0 27 12 21 24 24 37 14 48 18 62 9 74 13 87 4 100 6" />
                         </svg>
                       </span>
                     </div>
@@ -720,7 +935,7 @@ export default function App() {
               <div className="overview-middle">
                 <Section
                   title="Struktura technologii OZE"
-                  subtitle="Udział linii produktowych w portfelu zamówień"
+                  subtitle="Udział linii produktowych w widocznym portfelu zamówień"
                   action={
                     <select aria-label="Okres raportowania">
                       <option>Październik 2024</option>
@@ -731,7 +946,7 @@ export default function App() {
                   <div className="project-overview">
                     <div className="donut">
                       <div>
-                        <strong>{projects.length}</strong>
+                        <strong>{roleScopedProjects.length}</strong>
                         <span>Obiektów OZE</span>
                       </div>
                     </div>
@@ -753,20 +968,20 @@ export default function App() {
                   <div className="panel-foot">
                     <span>
                       <i className="live-dot" />
-                      Średni czas od umowy do montażu: 14 dni roboczych
+                      Podpisanie umowy na leadzie automatycznie tworzy realizację OZE
                     </span>
-                    <button onClick={() => navigate('Raporty OZE')}>
-                      Pełna analityka <Icon name="arrow" size={14} />
+                    <button onClick={() => navigate('Leady i Sprzedaż')}>
+                      Otwórz lejek <Icon name="arrow" size={14} />
                     </button>
                   </div>
                 </Section>
 
                 <Section
-                  title="Najbliższe montaże i odbiory OSD"
+                  title="Najbliższe montaże i audyty"
                   subtitle="Harmonogram wyjazdów ekip i terminów przyłączeń"
                   action={
                     <button className="text-button" onClick={() => navigate('Grafik Montaży')}>
-                      Grafik ekip <Icon name="arrow" size={14} />
+                      Grafik <Icon name="arrow" size={14} />
                     </button>
                   }
                 >
@@ -804,7 +1019,11 @@ export default function App() {
               </div>
 
               <Section
-                title="Kluczowe realizacje OZE w toku"
+                title={
+                  currentRole === 'salesman'
+                    ? 'Realizacje OZE dla Twoich klientów'
+                    : 'Kluczowe realizacje OZE w toku'
+                }
                 subtitle="Monitorowanie statusu od audytu technicznego po zgłoszenie OSD i dotację"
                 action={
                   <button className="text-button" onClick={() => navigate('Realizacje OZE')}>
@@ -813,22 +1032,26 @@ export default function App() {
                 }
                 className="recent-projects"
               >
-                {projectTable(projects.slice(0, 5), true)}
+                {projectTable(roleScopedProjects.slice(0, 5), true)}
               </Section>
 
               <div className="bottom-grid">
                 <Section
-                  title="Leady sprzedażowe i zadania audytowe"
+                  title={
+                    currentRole === 'salesman'
+                      ? 'Twoje leady sprzedażowe (zaznacz, aby podpisać umowę)'
+                      : 'Leady sprzedażowe i zadania audytowe'
+                  }
                   action={
                     <button className="text-button" onClick={() => navigate('Leady i Sprzedaż')}>
                       Lejek sprzedaży <Icon name="arrow" size={14} />
                     </button>
                   }
                 >
-                  {taskList(tasks.slice(0, 4))}
+                  {taskList(roleScopedTasks.slice(0, 5))}
                   <button className="add-task-link" onClick={() => open('Zadanie')}>
                     <Icon name="plus" size={15} />
-                    Dodaj nowy lead lub zadanie dla audytora
+                    Dodaj nowy lead z kalkulatorem mocy OZE
                   </button>
                 </Section>
 
@@ -839,7 +1062,7 @@ export default function App() {
                       className="icon-button"
                       aria-label="Szczegóły aktywności"
                       onClick={() => {
-                        navigate('Ustawienia');
+                        if (currentRole === 'admin') navigate('Ustawienia');
                         notify('Każda zmiana statusu zapisywana jest w tabeli activity_logs (SQLite).');
                       }}
                     >
@@ -852,9 +1075,11 @@ export default function App() {
               </div>
 
               <footer>
-                <span>SM-OZE Polska · Warstwa danych: {dbEngine}</span>
                 <span>
-                  Wersja MVP 1.0 <i /> Zgodność z RODO i wymogami OSD
+                  SM-OZE Polska · Aktywny użytkownik: {currentUser.name} ({roleLabels[currentRole]})
+                </span>
+                <span>
+                  Warstwa danych: {dbEngine} <i /> Zgodność z RODO
                 </span>
               </footer>
             </>
@@ -878,7 +1103,9 @@ export default function App() {
                     <strong>{detail.systemType}</strong>
                   </p>
                 </div>
-                <Button onClick={() => open('Realizacja', detail)}>Edytuj parametry obiektu</Button>
+                {currentRole !== 'salesman' && (
+                  <Button onClick={() => open('Realizacja', detail)}>Edytuj parametry obiektu</Button>
+                )}
               </div>
 
               <div className="detail-stats">
@@ -976,16 +1203,16 @@ export default function App() {
                     </Button>
                   }
                 >
-                  {taskList(tasks.filter(t => t.project === detail.name))}
+                  {taskList(tasks.filter(t => t.project === detail.name || t.project === detail.client))}
                 </Section>
               ) : tab === 'Ekipa i Sprzęt' ? (
                 <div className="employee-grid">
-                  {employees.slice(0, 3).map(e => (
+                  {users.slice(0, 3).map(e => (
                     <div className="panel employee-card" key={e.name}>
                       <Avatar name={e.name} color={e.color} />
                       <h3>{e.name}</h3>
                       <p>{e.role}</p>
-                      <Badge>Przypisany do obiektu</Badge>
+                      <Badge>{e.systemRole.toUpperCase()}</Badge>
                     </div>
                   ))}
                 </div>
@@ -1022,25 +1249,31 @@ export default function App() {
               {/* OZE Installations pipeline (Table & Kanban) */}
               <PageHeading
                 title="Realizacje OZE (Obiekty i Montaże)"
-                subtitle="Zarządzaj procesem od audytu technicznego po montaż i przyłączenie do sieci OSD."
-                button="Nowa realizacja OZE"
+                subtitle={
+                  currentRole === 'salesman'
+                    ? 'Podgląd postępu montażu i przyłączenia dla Twoich podpisanych umów.'
+                    : 'Zarządzaj procesem od audytu technicznego po montaż i przyłączenie do sieci OSD.'
+                }
+                button={currentRole !== 'salesman' ? 'Nowa realizacja OZE' : undefined}
                 onClick={() => open('Realizacja')}
               />
               <div className="summary-strip">
                 <span>
-                  <strong>{projects.length}</strong> Wszystkie instalacje ({totalPowerKwp} kWp / {totalBatteryKwh} kWh)
+                  <strong>{roleScopedProjects.length}</strong> Widoczne instalacje ({totalPowerKwp} kWp /{' '}
+                  {totalBatteryKwh} kWh)
                 </span>
                 <span>
                   <i className="legend-dot blue" />
-                  {projects.filter(p => p.status === 'Montaż w toku').length} Montaż w toku
+                  {roleScopedProjects.filter(p => p.status === 'Montaż w toku').length} Montaż w toku
                 </span>
                 <span>
                   <i className="legend-dot orange" />
-                  {projects.filter(p => p.status === 'Zgłoszenie OSD / Dotacja').length} Weryfikacja OSD / Dotacja
+                  {roleScopedProjects.filter(p => p.status === 'Zgłoszenie OSD / Dotacja').length} Weryfikacja OSD /
+                  Dotacja
                 </span>
                 <span>
                   <i className="legend-dot green" />
-                  {projects.filter(p => p.status === 'Odebrane').length} Odebrane i rozliczone
+                  {roleScopedProjects.filter(p => p.status === 'Odebrane').length} Odebrane i rozliczone
                 </span>
               </div>
               {toolbar('projects')}
@@ -1078,7 +1311,7 @@ export default function App() {
                         .map(p => (
                           <div
                             className="kanban-card"
-                            draggable
+                            draggable={currentRole !== 'salesman'}
                             onDragStart={e => e.dataTransfer.setData('text', String(p.id))}
                             key={p.id}
                             onClick={() => {
@@ -1097,6 +1330,7 @@ export default function App() {
                               <select
                                 aria-label={`Etap dla ${p.name}`}
                                 value={p.status}
+                                disabled={currentRole === 'salesman'}
                                 onClick={e => e.stopPropagation()}
                                 onChange={e => changeProjectStatus(p.id, e.target.value)}
                               >
@@ -1114,27 +1348,50 @@ export default function App() {
             </>
           ) : page === 'Leady i Sprzedaż' ? (
             <>
-              {/* Sales & Lead qualification pipeline */}
+              {/* Sales & Lead qualification pipeline with automated conversion to Realizacje OZE */}
               <PageHeading
                 title="Leady, Audyty i Lejek Sprzedaży"
-                subtitle="Obsługa zapytań z kalkulatora OZE, praca handlowców D2D oraz wyceny instalacji."
-                button="Dodaj lead / zadanie"
+                subtitle="Zmień etap na 'Umowa podpisana (Wygrana)', aby automatycznie przekazać obiekt do Realizacji OZE i działu Dotacji."
+                button="Dodaj lead + Kalkulator"
                 onClick={() => open('Zadanie')}
               />
+              <div className="summary-strip">
+                <span>
+                  <strong>{roleScopedTasks.length}</strong> Leady w lejku ({roleLabels[currentRole]})
+                </span>
+                <span>
+                  <i className="legend-dot purple" />
+                  {roleScopedTasks.filter(t => t.status === 'Nowy lead').length} Nowy lead
+                </span>
+                <span>
+                  <i className="legend-dot blue" />
+                  {roleScopedTasks.filter(t => t.status === 'Audyt / W toku').length} Audyt w toku
+                </span>
+                <span>
+                  <i className="legend-dot green" />
+                  {
+                    roleScopedTasks.filter(
+                      t =>
+                        t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane'
+                    ).length
+                  }{' '}
+                  Podpisane umowy (przekazane do montażu)
+                </span>
+              </div>
               {toolbar('tasks')}
               {view === 'table' ? (
-                <Section title="Aktywne szanse sprzedażowe i zadania techniczne">
+                <Section title="Szanse sprzedażowe i kalkulacje techniczne">
                   <div className="table-scroll">
                     <table>
                       <thead>
                         <tr>
-                          <th>Temat / Zadanie handlowe</th>
-                          <th>Obiekt / Instalacja</th>
-                          <th>Źródło / Parametry</th>
-                          <th>Doradca / Audytor</th>
+                          <th>Temat / Lead sprzedażowy</th>
+                          <th>Klient / Inwestor</th>
+                          <th>Źródło i dobór mocy</th>
+                          <th>Handlowiec (Owner)</th>
                           <th>Priorytet</th>
                           <th>Termin</th>
-                          <th>Etap lejka</th>
+                          <th>Etap lejka (Auto-konwersja)</th>
                           <th />
                         </tr>
                       </thead>
@@ -1148,7 +1405,8 @@ export default function App() {
                             </td>
                             <td>{t.project}</td>
                             <td>
-                              {t.leadSource || 'Wewnętrzny'} {t.estimatedPower ? `(${t.estimatedPower})` : ''}
+                              {t.leadSource || 'Kalkulator WWW'}{' '}
+                              {t.estimatedPower ? `(${t.estimatedPower})` : ''}
                             </td>
                             <td>
                               <div className="person">
@@ -1240,7 +1498,7 @@ export default function App() {
             </>
           ) : page === 'Dotacje i OSD' ? (
             <>
-              {/* Dedicated Polish OZE Subsidy & OSD Grid Connection Hub */}
+              {/* Dedicated Polish OZE Subsidy & OSD Grid Connection Hub (Manager & Admin) */}
               <PageHeading
                 title="Centrum Dotacji (Mój Prąd / Czyste Powietrze) i Zgłoszeń OSD"
                 subtitle="Kontrola wniosków do NFOŚiGW/WFOŚiGW oraz zgłoszeń przyłączeniowych do PGE, Tauron, Enea i Energa."
@@ -1331,13 +1589,15 @@ export default function App() {
             </>
           ) : page === 'Klienci i Obiekty' ? (
             <>
-              {/* Clients & installation addresses */}
+              {/* Clients & installation addresses (filtered by owner for Salesman) */}
               <PageHeading
                 title={clientDetail?.name || 'Klienci i Inwestorzy OZE'}
                 subtitle={
                   clientDetail
-                    ? `Adres inwestycji: ${clientDetail.address} (${clientDetail.voivodeship})`
-                    : 'Baza gospodarstw domowych, rolników i klientów biznesowych (B2B).'
+                    ? `Adres inwestycji: ${clientDetail.address} (${clientDetail.voivodeship}) · Opiekun: ${clientDetail.ownerName}`
+                    : currentRole === 'salesman'
+                      ? `Twoja baza inwestorów (${roleScopedClients.length} przypisanych klientów — ochrona RODO).`
+                      : 'Pełna baza gospodarstw domowych, rolników i klientów biznesowych (B2B).'
                 }
                 button={clientDetail ? 'Wszyscy klienci' : 'Dodaj inwestora'}
                 onClick={() => (clientDetail ? setClientDetail(null) : open('Klient'))}
@@ -1360,6 +1620,10 @@ export default function App() {
                     <div>
                       <small>Model finansowania</small>
                       <strong>{clientDetail.financing}</strong>
+                    </div>
+                    <div>
+                      <small>Handlowiec (Opiekun)</small>
+                      <strong>{clientDetail.ownerName || 'Aleksander Morawski'}</strong>
                     </div>
                     <div>
                       <small>Status klienta</small>
@@ -1409,12 +1673,13 @@ export default function App() {
                           <th>Adres inwestycji</th>
                           <th>Województwo / OSD</th>
                           <th>Telefon</th>
+                          <th>Handlowiec</th>
                           <th>Finansowanie</th>
                           <th>Status</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {clients
+                        {roleScopedClients
                           .filter(c =>
                             `${c.name} ${c.contact} ${c.address} ${c.voivodeship} ${c.osd}`
                               .toLowerCase()
@@ -1434,6 +1699,7 @@ export default function App() {
                                 {c.voivodeship} · <strong>{c.osd}</strong>
                               </td>
                               <td>{c.phone}</td>
+                              <td>{c.ownerName}</td>
                               <td>{c.financing}</td>
                               <td>
                                 <Badge>{c.status}</Badge>
@@ -1442,7 +1708,7 @@ export default function App() {
                           ))}
                       </tbody>
                     </table>
-                    {!clients.some(c =>
+                    {!roleScopedClients.some(c =>
                       `${c.name} ${c.contact} ${c.address} ${c.voivodeship}`
                         .toLowerCase()
                         .includes(search.toLowerCase())
@@ -1455,19 +1721,63 @@ export default function App() {
             </>
           ) : page === 'Ekipy i Handlowcy' ? (
             <>
-              {/* Field teams, auditors, and sales reps */}
+              {/* Field teams, auditors, and sales reps with RBAC management */}
               <PageHeading
-                title={employee?.name || 'Ekipy Monterskie, Audytorzy i Doradcy OZE'}
+                title={employee?.name || 'Ekipy Monterskie, Managerowie i Handlowcy (RBAC)'}
                 subtitle={
                   employee
-                    ? `${employee.role} · Dział: ${employee.department} · Rola RBAC: ${employee.systemRole.toUpperCase()}`
-                    : 'Struktura operacyjna firmy w bazie SQLite (podział na role: admin, manager, salesman).'
+                    ? `${employee.role} · Dział: ${employee.department} · Rola systemowa: ${employee.systemRole.toUpperCase()}`
+                    : 'Zarządzanie uprawnieniami (Admin, Manager, Salesman) i obciążeniem zespołów w bazie SQLite.'
                 }
                 button={employee ? 'Wszyscy pracownicy' : 'Raport obłożenia ekip'}
                 onClick={() => (employee ? setEmployee(null) : navigate('Raporty OZE'))}
               />
               {employee ? (
                 <>
+                  <div className="detail-stats">
+                    <div>
+                      <small>Imię i nazwisko</small>
+                      <strong>{employee.name}</strong>
+                    </div>
+                    <div>
+                      <small>Rola w systemie (RBAC)</small>
+                      {currentRole === 'admin' ? (
+                        <select
+                          aria-label="Zmień rolę RBAC"
+                          value={employee.systemRole}
+                          onChange={async e => {
+                            const newRole = e.target.value as SystemRole;
+                            const snap = await DataLayer.updateUserRole(
+                              employee.id,
+                              newRole,
+                              currentUser.name
+                            );
+                            applySnapshot(snap);
+                            setEmployee({ ...employee, systemRole: newRole });
+                            notify(
+                              `Zaktualizowano w SQLite rolę dla ${employee.name}: ${newRole.toUpperCase()}`
+                            );
+                          }}
+                        >
+                          <option value="admin">ADMIN (Pełny dostęp)</option>
+                          <option value="manager">MANAGER (Realizacje i OSD)</option>
+                          <option value="salesman">SALESMAN (Własne leady i klienci)</option>
+                        </select>
+                      ) : (
+                        <Badge>{employee.systemRole.toUpperCase()}</Badge>
+                      )}
+                    </div>
+                    <div>
+                      <small>Region operacyjny</small>
+                      <strong>{employee.region}</strong>
+                    </div>
+                    <div>
+                      <small>Przełącz widok na tego pracownika</small>
+                      <Button onClick={() => switchUser(employee)}>
+                        Zaloguj jako {employee.name.split(' ')[0]}
+                      </Button>
+                    </div>
+                  </div>
                   <Section title="Prowadzone realizacje OZE">
                     {projectTable(projects.filter(p => p.manager === employee.name), true)}
                   </Section>
@@ -1481,15 +1791,15 @@ export default function App() {
                     <div className="search-field">
                       <Icon name="search" />
                       <input
-                        placeholder="Szukaj doradcy, ekipy monterskiej, roli (admin/manager/salesman)..."
+                        placeholder="Szukaj pracownika, regionu lub roli (admin / manager / salesman)..."
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                       />
                     </div>
-                    <span>Użytkownicy w tabeli SQL `users` ({employees.length})</span>
+                    <span>Użytkownicy w tabeli SQL `users` ({users.length})</span>
                   </div>
                   <div className="employee-grid">
-                    {employees
+                    {users
                       .filter(e =>
                         `${e.name} ${e.role} ${e.department} ${e.region} ${e.systemRole}`
                           .toLowerCase()
@@ -1502,14 +1812,14 @@ export default function App() {
                           onClick={() => setEmployee(e)}
                         >
                           <div className="employee-card-top">
-                            <span className="department">
-                              {e.department} · {e.systemRole.toUpperCase()}
-                            </span>
-                            <Icon name="more" />
+                            <span className="department">{e.department}</span>
+                            <Badge>{e.systemRole.toUpperCase()}</Badge>
                           </div>
                           <Avatar name={e.name} color={e.color} />
                           <h3>{e.name}</h3>
-                          <p>{e.role}</p>
+                          <p>
+                            {e.role} · <strong>{e.region}</strong>
+                          </p>
                           <div className="employee-workload">
                             <span>
                               Alokacja czasu <strong>{e.workload}%</strong>
@@ -1517,7 +1827,7 @@ export default function App() {
                             <Progress value={e.workload} />
                           </div>
                           <span className="employee-link">
-                            Karta pracownika i realizacje <Icon name="arrow" size={14} />
+                            Uprawnienia RBAC i realizacje <Icon name="arrow" size={14} />
                           </span>
                         </button>
                       ))}
@@ -1691,11 +2001,11 @@ export default function App() {
                   subtitle="Alokacja zasobów ludzkich pomiędzy sprzedażą, audytem a montażem"
                 >
                   <div className="workload-list">
-                    {employees.map(e => (
+                    {users.map(e => (
                       <div key={e.name}>
                         <div className="person">
                           <Avatar name={e.name} color={e.color} small />
-                          {e.name}
+                          {e.name} ({e.systemRole})
                         </div>
                         <Progress value={e.workload} />
                       </div>
@@ -1719,10 +2029,10 @@ export default function App() {
             </>
           ) : (
             <>
-              {/* OZE System Settings & SQLite Data Layer Inspector */}
+              {/* OZE System Settings & SQLite Data Layer Inspector (Admin only) */}
               <PageHeading
-                title="Ustawienia Systemu i Warstwa Bazy Danych SQLite"
-                subtitle="Zarządzanie silnikiem SQLite (database/oze_crm.sqlite), schematem tabel (database/schema.sql) oraz konfiguracją OZE."
+                title="Ustawienia Systemu, RBAC i Warstwa Bazy Danych SQLite"
+                subtitle="Zarządzanie silnikiem SQLite (database/oze_crm.sqlite), uprawnieniami ról oraz konfiguracją OZE."
               />
 
               <Section
@@ -1743,7 +2053,7 @@ export default function App() {
                 <div className="detail-stats">
                   <div>
                     <small>Tabela: users (RBAC)</small>
-                    <strong>{employees.length} rekordów</strong>
+                    <strong>{users.length} rekordów</strong>
                   </div>
                   <div>
                     <small>Tabela: clients</small>
@@ -1801,7 +2111,7 @@ export default function App() {
                   </label>
                   <label className="checkbox-label">
                     <input type="checkbox" defaultChecked />
-                    Automatycznie generuj zgłoszenie mikroinstalacji dla PGE / Tauron / Enea / Energa po zakończeniu montażu
+                    Automatycznie twórz realizację montażową i wniosek OSD po podpisaniu umowy przez Handlowca
                   </label>
                   <Button variant="primary" type="submit">
                     Zapisz konfigurację
@@ -1813,7 +2123,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Modal dialog for creating and editing OZE installations, leads, clients, and schedule items */}
+      {/* Modal dialog for creating and editing OZE installations, leads (with OZE calculator), clients, and schedule items */}
       {modal && (
         <div
           className="modal-overlay"
@@ -1828,9 +2138,9 @@ export default function App() {
                   {editing ? 'Edytuj w bazie SQLite:' : 'Dodaj do bazy SQLite:'} {modal}
                 </h2>
                 <p>
-                  {editing
-                    ? 'Zmiany zostaną natychmiast zapisane w tabeli relacyjnej SQLite.'
-                    : 'Nowy rekord zostanie zapisany w bazie database/oze_crm.sqlite.'}
+                  {modal === 'Zadanie'
+                    ? 'Wprowadź dane leada i skorzystaj z szybkiego kalkulatora doboru mocy OZE.'
+                    : 'Nowy rekord zostanie natychmiast zapisany w bazie database/oze_crm.sqlite.'}
                 </p>
               </div>
               <button className="icon-button" aria-label="Zamknij okno" onClick={() => setModal(null)}>
@@ -1863,32 +2173,44 @@ export default function App() {
                     color: existingProj ? existingProj.color : 'blue',
                     initials: name.slice(0, 2).toUpperCase(),
                     systemType: String(form.get('systemType') || 'PV + Magazyn energii'),
-                    powerKwp: Number(form.get('powerKwp') || 9.8),
-                    batteryKwh: Number(form.get('batteryKwh') || 10),
+                    powerKwp: Number(form.get('powerKwp') || calcKwp),
+                    batteryKwh: Number(form.get('batteryKwh') || calcKwh),
                     osdOperator: (form.get('osdOperator') as Project['osdOperator']) || 'PGE',
                     subsidyProgram: (form.get('subsidyProgram') as Project['subsidyProgram']) || 'Mój Prąd 6.0',
                     subsidyStatus: existingProj ? existingProj.subsidyStatus : 'W przygotowaniu',
                     roofType: existingProj ? existingProj.roofType : 'Dachówka ceramiczna',
-                    contractValue: String(form.get('contractValue') || '54 000 PLN'),
+                    contractValue: String(
+                      form.get('contractValue') ||
+                        `${Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100} PLN`
+                    ),
                     installTeam: existingProj ? existingProj.installTeam : 'Ekipa Mazowsze-1',
                     voivodeship: existingProj ? existingProj.voivodeship : 'Mazowieckie',
                   };
-                  const snap = await DataLayer.saveInstallation(p);
+                  const snap = await DataLayer.saveInstallation(p, currentUser.name);
                   applySnapshot(snap);
                   if (detail?.id === p.id) setDetail(p);
                 } else if (modal === 'Zadanie') {
+                  const statusVal = String(form.get('status'));
                   const t: Task = {
                     id: editing?.id || Date.now(),
                     name,
                     project: String(form.get('project')),
                     assignee: String(form.get('manager')),
                     priority: String(form.get('priority')),
-                    status: String(form.get('status')),
+                    status: statusVal,
                     due: String(form.get('deadline')),
                     leadSource: 'Kalkulator OZE / CRM',
+                    estimatedPower: `${calcKwp} kWp + ${calcKwh} kWh`,
                   };
-                  const snap = await DataLayer.saveLead(t);
+                  const snap = await DataLayer.saveLead(t, currentUser.name);
                   applySnapshot(snap);
+                  if (statusVal === 'Umowa podpisana (Wygrana)') {
+                    setModal(null);
+                    notify(
+                      'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE oraz wniosek w Dotacje i OSD.'
+                    );
+                    return;
+                  }
                 } else if (modal === 'Klient') {
                   const newClient: ClientRecord = {
                     id: Date.now(),
@@ -1903,9 +2225,9 @@ export default function App() {
                     voivodeship: 'Mazowieckie',
                     osd: 'PGE',
                     financing: 'Dotacja + Gotówka',
-                    ownerName: 'Aleksander Morawski',
+                    ownerName: currentUser.name,
                   };
-                  const snap = await DataLayer.saveClient(newClient);
+                  const snap = await DataLayer.saveClient(newClient, currentUser.name);
                   applySnapshot(snap);
                 } else {
                   const snap = await DataLayer.saveEvent({ name, date: String(form.get('deadline')) });
@@ -1921,7 +2243,7 @@ export default function App() {
                     ? 'Inwestor (Imię i nazwisko lub nazwa firmy)'
                     : modal === 'Realizacja'
                       ? 'Nazwa inwestycji OZE (np. PV 10 kWp + Magazyn — Miasto)'
-                      : 'Temat zadania / leada sprzedażowego'}{' '}
+                      : 'Temat leada sprzedażowego / audytu'}{' '}
                   <span>*</span>
                   <input
                     autoFocus
@@ -1955,6 +2277,29 @@ export default function App() {
                   </>
                 ) : (
                   <>
+                    {/* Built-in OZE Power & Battery Calculator for Salesmen and Managers */}
+                    {(modal === 'Zadanie' || modal === 'Realizacja') && (
+                      <div className="form-grid">
+                        <label>
+                          Kalkulator: Rachunek za prąd (PLN/mies.)
+                          <input
+                            type="number"
+                            value={billPln}
+                            onChange={e => recalculateFromBill(Number(e.target.value) || 0)}
+                          />
+                        </label>
+                        <label>
+                          Dobrana moc PV (kWp) + Magazyn (kWh)
+                          <input
+                            readOnly
+                            value={`${calcKwp} kWp + ${calcKwh} kWh (~${(
+                              Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
+                            ).toLocaleString('pl-PL')} PLN)`}
+                          />
+                        </label>
+                      </div>
+                    )}
+
                     {modal === 'Realizacja' ? (
                       <>
                         <div className="form-grid">
@@ -1962,7 +2307,9 @@ export default function App() {
                             Inwestor / Klient <span>*</span>
                             <select
                               name="client"
-                              defaultValue={editing && 'client' in editing ? editing.client : clients[0]?.name}
+                              defaultValue={
+                                editing && 'client' in editing ? editing.client : roleScopedClients[0]?.name
+                              }
                             >
                               {clients.map(c => (
                                 <option key={c.id}>{c.name}</option>
@@ -1989,7 +2336,8 @@ export default function App() {
                               name="powerKwp"
                               type="number"
                               step="0.1"
-                              defaultValue={editing && 'powerKwp' in editing ? editing.powerKwp : 9.8}
+                              value={calcKwp}
+                              onChange={e => setCalcKwp(Number(e.target.value))}
                             />
                           </label>
                           <label>
@@ -1998,7 +2346,8 @@ export default function App() {
                               name="batteryKwh"
                               type="number"
                               step="1"
-                              defaultValue={editing && 'batteryKwh' in editing ? editing.batteryKwh : 10}
+                              value={calcKwh}
+                              onChange={e => setCalcKwh(Number(e.target.value))}
                             />
                           </label>
                           <label>
@@ -2030,13 +2379,17 @@ export default function App() {
                     ) : (
                       modal === 'Zadanie' && (
                         <label>
-                          Powiązana inwestycja OZE <span>*</span>
+                          Inwestor / Klient docelowy <span>*</span>
                           <select
                             name="project"
-                            defaultValue={editing && 'project' in editing ? editing.project : detail?.name}
+                            defaultValue={
+                              editing && 'project' in editing
+                                ? editing.project
+                                : roleScopedClients[0]?.name || clients[0]?.name
+                            }
                           >
-                            {projects.map(p => (
-                              <option key={p.id}>{p.name}</option>
+                            {clients.map(c => (
+                              <option key={c.id}>{c.name}</option>
                             ))}
                           </select>
                         </label>
@@ -2045,7 +2398,7 @@ export default function App() {
 
                     <div className="form-grid">
                       <label>
-                        {modal === 'Realizacja' ? 'Koordynator / Doradca' : 'Osoba odpowiedzialna'}
+                        {modal === 'Realizacja' ? 'Koordynator / Doradca' : 'Handlowiec prowadzący'}
                         <select
                           name="manager"
                           defaultValue={
@@ -2053,10 +2406,10 @@ export default function App() {
                               ? 'manager' in editing
                                 ? editing.manager
                                 : editing.assignee
-                              : 'Aleksander Morawski'
+                              : currentUser.name
                           }
                         >
-                          {employees.map(x => (
+                          {users.map(x => (
                             <option key={x.name}>{x.name}</option>
                           ))}
                         </select>

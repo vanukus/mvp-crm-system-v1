@@ -68,7 +68,13 @@ export function Badge({ children }: { children: string }) {
     'nowy-lead': 'planning planowanie',
     'audyt-w-toku': 'in-progress w-trakcie',
     'oferta-weryfikacja': 'in-review do-weryfikacji',
+    'umowa-podpisana-wygrana': 'done zrobione',
     'zrealizowane': 'done zrobione',
+
+    // RBAC Role badges
+    'admin': 'urgent pilny',
+    'manager': 'in-progress w-trakcie',
+    'salesman': 'completed ukonczony',
 
     // Subsidy & OSD statuses
     'w-przygotowaniu': 'on-hold wstrzymany',
