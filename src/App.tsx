@@ -4,13 +4,17 @@ import {
   initialTasks,
   initialClients,
   employees as initialEmployees,
+  initialEvents,
   initialActivities,
+  defaultSettings,
   type Project,
   type Task,
   type ClientRecord,
   type Employee,
+  type CalendarEvent,
   type ActivityLog,
   type SystemRole,
+  type SystemSettings,
 } from './data';
 import { DataLayer } from './db';
 import { Icon, Button, Avatar, Badge, Progress, Section } from './ui';
@@ -61,6 +65,22 @@ const subsidyPrograms: Project['subsidyProgram'][] = [
   'Ciepłe Mieszkanie',
   'Brak (B2B)',
 ];
+const roofTypes: Project['roofType'][] = [
+  'Dachówka ceramiczna',
+  'Blachodachówka',
+  'Dach płaski',
+  'Grunt',
+];
+const polishVoivodeships = [
+  'Mazowieckie',
+  'Małopolskie',
+  'Wielkopolskie',
+  'Śląskie',
+  'Pomorskie',
+  'Dolnośląskie',
+  'Łódzkie',
+  'Podkarpackie',
+];
 
 // Polish labels for RBAC roles
 const roleLabels: Record<SystemRole, string> = {
@@ -68,6 +88,8 @@ const roleLabels: Record<SystemRole, string> = {
   manager: 'Manager (Koordynator)',
   salesman: 'Salesman (Handlowiec)',
 };
+
+type EditableRecord = Project | Task | ClientRecord | Employee | null;
 
 export default function App() {
   // Active navigation and core SQLite-backed database state
@@ -77,7 +99,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [clients, setClients] = useState<ClientRecord[]>(initialClients);
+  const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
   const [activities, setActivities] = useState<ActivityLog[]>(initialActivities);
+  const [settings, setSettings] = useState<SystemSettings>(defaultSettings);
   const [dbEngine, setDbEngine] = useState('SQLite 3 (database/oze_crm.sqlite)');
 
   // Search and funnel filter state
@@ -90,7 +114,7 @@ export default function App() {
 
   // Modal dialog state & OZE bill calculator state
   const [modal, setModal] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Project | Task | null>(null);
+  const [editing, setEditing] = useState<EditableRecord>(null);
   const [billPln, setBillPln] = useState<number>(450);
   const [calcKwp, setCalcKwp] = useState<number>(9.8);
   const [calcKwh, setCalcKwh] = useState<number>(10);
@@ -105,9 +129,8 @@ export default function App() {
   const [menu, setMenu] = useState('');
   const [toast, setToast] = useState('');
   const [sort, setSort] = useState(false);
-  const [month, setMonth] = useState(9); // October (0-indexed)
+  const [month, setMonth] = useState(9); // October 2024 (0-indexed)
   const [week, setWeek] = useState(false);
-  const [events, setEvents] = useState<{ name: string; date: string }[]>([]);
 
   // Active logged-in user and their RBAC role ('admin' | 'manager' | 'salesman')
   const currentUser = users.find(u => u.id === currentUserId) || users[0];
@@ -124,6 +147,7 @@ export default function App() {
     setEvents(snap.events);
     setActivities(snap.activities);
     if (snap.users?.length) setUsers(snap.users);
+    if (snap.settings) setSettings(snap.settings);
     setDbEngine(`${snap.meta.engine} · ${snap.meta.file}`);
   };
 
@@ -176,11 +200,16 @@ export default function App() {
   };
 
   // Open creation or edit modal and initialize calculator defaults
-  const open = (type: string, record?: Project | Task) => {
+  const open = (type: string, record?: EditableRecord) => {
     setEditing(record || null);
     if (record && 'powerKwp' in record) {
       setCalcKwp(record.powerKwp);
       setCalcKwh(record.batteryKwh);
+    } else if (record && 'estimatedPower' in record && record.estimatedPower) {
+      const kwpMatch = record.estimatedPower.match(/([\d.]+)\s*kWp/i);
+      const kwhMatch = record.estimatedPower.match(/([\d.]+)\s*kWh/i);
+      setCalcKwp(kwpMatch ? Number(kwpMatch[1]) : 9.8);
+      setCalcKwh(kwhMatch ? Number(kwhMatch[1]) : 10);
     } else {
       setCalcKwp(9.8);
       setCalcKwh(10);
@@ -211,14 +240,33 @@ export default function App() {
         )
       : projects;
 
-  // Dynamic OZE totals calculated from role-scoped installations
+  // Dynamic OZE totals calculated from role-scoped installations in SQLite
   const totalPowerKwp = roleScopedProjects.reduce((sum, p) => sum + p.powerKwp, 0).toFixed(1);
   const totalBatteryKwh = roleScopedProjects.reduce((sum, p) => sum + p.batteryKwh, 0);
+
+  // Dynamic technology breakdown calculated from roleScopedProjects
+  const totalScopedCount = Math.max(1, roleScopedProjects.length);
+  const pvStorageShare = Math.round(
+    (roleScopedProjects.filter(p => p.systemType === 'PV + Magazyn energii').length /
+      totalScopedCount) *
+      100
+  );
+  const heatPumpShare = Math.round(
+    (roleScopedProjects.filter(
+      p => p.systemType.includes('Dom') || p.systemType.includes('Pompa')
+    ).length /
+      totalScopedCount) *
+      100
+  );
+  const b2bShare = Math.round(
+    (roleScopedProjects.filter(p => p.systemType.includes('B2B')).length / totalScopedCount) * 100
+  );
+  const expansionShare = Math.max(0, 100 - pvStorageShare - heatPumpShare - b2bShare);
 
   // Filter OZE installations by search, stage, priority, coordinator, and OSD grid operator
   const visibleProjects = roleScopedProjects
     .filter(p => {
-      const matchSearch = `${p.name} ${p.client} ${p.manager} ${p.systemType} ${p.voivodeship} ${p.osdOperator}`
+      const matchSearch = `${p.name} ${p.client} ${p.manager} ${p.systemType} ${p.voivodeship} ${p.osdOperator} ${p.notes || ''}`
         .toLowerCase()
         .includes(search.toLowerCase());
       const matchFilter = filter === 'Wszystkie statusy' || p.status === filter;
@@ -231,7 +279,7 @@ export default function App() {
 
   // Filter leads and tasks by search, priority, and stage
   const visibleTasks = roleScopedTasks.filter(t => {
-    const matchSearch = `${t.name} ${t.project} ${t.assignee} ${t.leadSource || ''}`
+    const matchSearch = `${t.name} ${t.project} ${t.assignee} ${t.leadSource || ''} ${t.notes || ''}`
       .toLowerCase()
       .includes(search.toLowerCase());
     const matchPriority = priority === 'Wszystkie priorytety' || t.priority === priority;
@@ -261,9 +309,10 @@ export default function App() {
                 ? 45
                 : 20,
     };
-    const snap = await DataLayer.saveInstallation(updated, currentUser.name);
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name, currentRole);
     applySnapshot(snap);
     if (detail?.id === id) setDetail(updated);
+    notify(`Zapisano w SQLite — etap realizacji: ${status}`);
   };
 
   // Update status of a lead/task in SQLite; triggers automatic installation creation when signed!
@@ -278,10 +327,10 @@ export default function App() {
     if (status === 'Umowa podpisana (Wygrana)' || status === 'Zrealizowane') {
       if (snap.projects.length > prevCount) {
         notify(
-          'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE oraz wniosek w Dotacje i OSD.'
+          'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE, wniosek OSD oraz audyt w Grafiku.'
         );
       } else {
-        notify(`Zaktualizowano status leada: ${status}`);
+        notify(`Zaktualizowano status leada w SQLite: ${status}`);
       }
     }
   };
@@ -295,7 +344,7 @@ export default function App() {
     const target = projects.find(p => p.id === id);
     if (!target) return;
     const updated: Project = { ...target, subsidyStatus };
-    const snap = await DataLayer.saveInstallation(updated, currentUser.name);
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name, currentRole);
     applySnapshot(snap);
     if (detail?.id === id) {
       setDetail(updated);
@@ -303,16 +352,36 @@ export default function App() {
     notify(`Zapisano w SQLite — status dotacji/OSD: ${subsidyStatus}`);
   };
 
-  // Calculate recommended PV kWp and Battery kWh from monthly electricity bill in PLN
-  const recalculateFromBill = (monthlyPln: number) => {
+  // Delete currently edited record from SQLite
+  const handleDeleteRecord = async () => {
+    if (!editing || !modal) return;
+    if (modal === 'Realizacja' && 'powerKwp' in editing) {
+      const snap = await DataLayer.deleteInstallation(editing.id, currentUser.name, currentRole);
+      applySnapshot(snap);
+      if (detail?.id === editing.id) setDetail(null);
+      notify(`Usunięto realizację z bazy SQLite: ${editing.name}`);
+    } else if (modal === 'Zadanie' && 'assignee' in editing) {
+      const snap = await DataLayer.deleteLead(editing.id, currentUser.name);
+      applySnapshot(snap);
+      notify(`Usunięto lead z bazy SQLite: ${editing.name}`);
+    } else if (modal === 'Klient' && 'contact' in editing) {
+      const snap = await DataLayer.deleteClient(editing.id, currentUser.name);
+      applySnapshot(snap);
+      if (clientDetail?.id === editing.id) setClientDetail(null);
+      notify(`Usunięto klienta z bazy SQLite: ${editing.name}`);
+    }
+    setModal(null);
+    setEditing(null);
+  };
+
+  // Calculate recommended PV kWp and Battery kWh from monthly electricity bill in PLN via Python FastAPI
+  const recalculateFromBill = async (monthlyPln: number) => {
     setBillPln(monthlyPln);
-    const annualKwh = (monthlyPln * 12) / 1.15;
-    const recommendedKwp = Math.max(3.5, Math.round((annualKwh / 1000) * 1.15 * 10) / 10);
-    const recommendedBattery = recommendedKwp <= 6 ? 10 : recommendedKwp <= 12 ? 15 : 20;
-    setCalcKwp(recommendedKwp);
-    setCalcKwh(recommendedBattery);
+    const res = await DataLayer.calculateOze(monthlyPln);
+    setCalcKwp(res.recommendedPowerKwp);
+    setCalcKwh(res.recommendedBatteryKwh);
     notify(
-      `Kalkulator OZE: Dla rachunku ${monthlyPln} PLN/mies. dobrano ${recommendedKwp} kWp PV + ${recommendedBattery} kWh magazynu.`
+      `FastAPI Kalkulator: ${res.recommendedPowerKwp} kWp + ${res.recommendedBatteryKwh} kWh · Dotacja: -${res.estimatedSubsidyPln.toLocaleString('pl-PL')} PLN · Zwrot: ~${res.paybackYears} lat`
     );
   };
 
@@ -610,17 +679,13 @@ export default function App() {
         <div className="sidebar-bottom">
           <Button
             className="source-download"
-            onClick={() => {
-              const link = document.createElement('a');
-              link.href = '/sm-project-source.zip';
-              link.download = 'sm-project-source.zip';
-              document.body.appendChild(link);
-              link.click();
-              link.remove();
+            onClick={async () => {
+              await DataLayer.downloadBackup();
+              notify('Pobrano pełną kopię zapasową bazy danych SQLite (JSON).');
             }}
           >
             <Icon name="folder" size={16} />
-            <span>Pobierz pliki źródłowe</span>
+            <span>Kopia bazy SQLite (JSON)</span>
           </Button>
 
           <div className="workspace-note">
@@ -662,7 +727,9 @@ export default function App() {
 
           <button
             className="nav-item"
-            onClick={() => notify('Wsparcie techniczne OZE CRM: serwis@sm-oze.pl · tel. +48 22 100 20 30')}
+            onClick={() =>
+              notify(`Biuro dotacji i OSD (${settings.companyName}): ${settings.officeEmail}`)
+            }
           >
             <Icon name="help" />
             <span>Baza wiedzy OSD i NFOŚiGW</span>
@@ -740,12 +807,14 @@ export default function App() {
               {menu === 'notifications' && (
                 <div className="dropdown notifications">
                   <h3>
-                    Powiadomienia ({currentRole.toUpperCase()}){' '}
-                    <span className="badge in-progress">3 nowe</span>
+                    Powiadomienia SQL ({currentRole.toUpperCase()}){' '}
+                    <span className="badge in-progress">{activities.slice(0, 3).length} nowe</span>
                   </h3>
-                  <p>PGE Dystrybucja potwierdziła wymianę licznika dwukierunkowego (Pruszków).</p>
-                  <p>Wniosek Mój Prąd 6.0 dla klienta T. Mazur przeszedł weryfikację.</p>
-                  <p>Nowy lead z kalkulatora WWW czeka na telefon doradcy.</p>
+                  {activities.slice(0, 3).map((act, i) => (
+                    <p key={act.id || i}>
+                      <strong>{act.userName}</strong> {act.action}: <em>{act.target}</em> ({act.timeLabel})
+                    </p>
+                  ))}
                   <Button
                     onClick={() => {
                       navigate('Leady i Sprzedaż');
@@ -783,6 +852,12 @@ export default function App() {
                     <Icon name="people" />
                     Nowy inwestor / klient
                   </button>
+                  {currentRole === 'admin' && (
+                    <button onClick={() => open('Pracownik')}>
+                      <Icon name="people" />
+                      Nowy pracownik (RBAC)
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -838,7 +913,7 @@ export default function App() {
                       ? 'Twój osobisty lejek sprzedaży OZE, zaplanowane audyty oraz postęp instalacji Twoich klientów.'
                       : currentRole === 'manager'
                         ? 'Nadzór nad realizacjami montażowymi, kompletem sprzętu, ekipami i wnioskami OSD / NFOŚiGW.'
-                        : 'Pełny widok zarządczy firmy (300 pracowników): sprzedaż, realizacje OZE, dotacje i baza SQLite.'}
+                        : `${settings.companyName} — pełny widok zarządczy: sprzedaż, realizacje OZE, dotacje i baza SQLite.`}
                   </p>
                 </div>
                 <div className="today">
@@ -901,8 +976,8 @@ export default function App() {
                     currentRole === 'salesman' ? 'Twoi inwestorzy' : 'Baza inwestorów (SQL)',
                     `${roleScopedClients.length} klientów`,
                     'people',
-                    '+4',
-                    'nowe umowy w tym tyg.',
+                    `+${roleScopedClients.filter(c => c.status === 'W realizacji').length}`,
+                    'w trakcie realizacji',
                     'teal',
                   ],
                 ].map(([label, count, icon, delta, desc, color]) => (
@@ -935,7 +1010,7 @@ export default function App() {
               <div className="overview-middle">
                 <Section
                   title="Struktura technologii OZE"
-                  subtitle="Udział linii produktowych w widocznym portfelu zamówień"
+                  subtitle="Udział linii produktowych wyliczony z bazy SQLite"
                   action={
                     <select aria-label="Okres raportowania">
                       <option>Październik 2024</option>
@@ -952,10 +1027,10 @@ export default function App() {
                     </div>
                     <div className="chart-legend">
                       {[
-                        ['PV + Magazyn energii', '44%', 'blue'],
-                        ['Domy pasywne + Pompy', '22%', 'purple'],
-                        ['Instalacje B2B + BESS', '18%', 'orange'],
-                        ['Rozbudowa magazynów', '16%', 'green'],
+                        ['PV + Magazyn energii', `${pvStorageShare}%`, 'blue'],
+                        ['Domy pasywne + Pompy', `${heatPumpShare}%`, 'purple'],
+                        ['Instalacje B2B + BESS', `${b2bShare}%`, 'orange'],
+                        ['Rozbudowa magazynów', `${expansionShare}%`, 'green'],
                       ].map(([label, percent, color]) => (
                         <div key={label}>
                           <i className={`legend-dot ${color}`} />
@@ -968,7 +1043,9 @@ export default function App() {
                   <div className="panel-foot">
                     <span>
                       <i className="live-dot" />
-                      Podpisanie umowy na leadzie automatycznie tworzy realizację OZE
+                      {settings.autoConvertLead
+                        ? 'Auto-konwersja leada do Realizacji OZE: AKTYWNA'
+                        : 'Auto-konwersja leada do Realizacji OZE: WYŁĄCZONA'}
                     </span>
                     <button onClick={() => navigate('Leady i Sprzedaż')}>
                       Otwórz lejek <Icon name="arrow" size={14} />
@@ -977,43 +1054,57 @@ export default function App() {
                 </Section>
 
                 <Section
-                  title="Najbliższe montaże i audyty"
+                  title="Najbliższe montaże i audyty (z tabeli calendar_events)"
                   subtitle="Harmonogram wyjazdów ekip i terminów przyłączeń"
                   action={
                     <button className="text-button" onClick={() => navigate('Grafik Montaży')}>
-                      Grafik <Icon name="arrow" size={14} />
+                      Grafik ({events.length}) <Icon name="arrow" size={14} />
                     </button>
                   }
                 >
                   <div className="deadline-list">
-                    {[
-                      ['28', 'PAŹ', 'Odbiór B2B 49.5 kWp + zgłoszenie Enea', 'Agro-Pol Sp. z o.o.', 'za 4 dni', 'orange'],
-                      ['30', 'PAŹ', 'Montaż falownika + magazyn 10 kWh', 'Marek Kowalski (Dom 160m²)', 'za 6 dni', 'blue'],
-                      ['05', 'LIS', 'Dostawa pompy ciepła i modułów PV', 'Krystyna Wójcik — Katowice', 'za 12 dni', 'purple'],
-                    ].map(([day, mon, title, client, left, color]) => (
-                      <button
-                        className="deadline-row"
-                        key={title}
-                        onClick={() => {
-                          const matched = projects.find(p => p.client === client);
-                          if (matched) {
-                            setDetail(matched);
-                            setPage('Realizacje OZE');
-                          }
-                        }}
-                      >
-                        <div className={`date-block ${color}`}>
-                          <small>{mon}</small>
-                          <strong>{day}</strong>
-                        </div>
-                        <div>
-                          <strong>{title}</strong>
-                          <span>{client}</span>
-                        </div>
-                        <span className="days-left">{left}</span>
-                        <Icon name="down" size={14} />
-                      </button>
-                    ))}
+                    {events.slice(-3).reverse().map((ev, idx) => {
+                      const d = new Date(ev.date + 'T12:00:00');
+                      const day = String(d.getDate()).padStart(2, '0');
+                      const mon = d
+                        .toLocaleString('pl-PL', { month: 'short' })
+                        .replace('.', '')
+                        .toUpperCase();
+                      const color =
+                        ev.eventType === 'Odbiór OSD'
+                          ? 'orange'
+                          : ev.eventType === 'Audyt'
+                            ? 'purple'
+                            : 'blue';
+                      return (
+                        <button
+                          className="deadline-row"
+                          key={ev.id || `${ev.name}-${idx}`}
+                          onClick={() => {
+                            const matched = projects.find(
+                              p => p.id === ev.installationId || p.client === ev.client
+                            );
+                            if (matched) {
+                              setDetail(matched);
+                              setPage('Realizacje OZE');
+                            } else {
+                              navigate('Grafik Montaży');
+                            }
+                          }}
+                        >
+                          <div className={`date-block ${color}`}>
+                            <small>{mon}</small>
+                            <strong>{day}</strong>
+                          </div>
+                          <div>
+                            <strong>{ev.name}</strong>
+                            <span>{ev.client || ev.eventType || 'Harmonogram OZE'}</span>
+                          </div>
+                          <span className="days-left">{ev.eventType || 'Montaż'}</span>
+                          <Icon name="down" size={14} />
+                        </button>
+                      );
+                    })}
                   </div>
                 </Section>
               </div>
@@ -1076,7 +1167,7 @@ export default function App() {
 
               <footer>
                 <span>
-                  SM-OZE Polska · Aktywny użytkownik: {currentUser.name} ({roleLabels[currentRole]})
+                  {settings.companyName} · Aktywny użytkownik: {currentUser.name} ({roleLabels[currentRole]})
                 </span>
                 <span>
                   Warstwa danych: {dbEngine} <i /> Zgodność z RODO
@@ -1149,15 +1240,21 @@ export default function App() {
                 <div className="detail-grid">
                   <Section title="Specyfikacja techniczna i kamienie milowe OZE">
                     <div className="prose">
-                      <h3>Zakres inwestycji</h3>
+                      <h3>Zakres inwestycji i notatki techniczne (SQLite)</h3>
                       <p>
                         Kompleksowa realizacja systemu <strong>{detail.systemType}</strong> dla inwestora{' '}
                         <strong>{detail.client}</strong> w województwie {detail.voivodeship.toLowerCase()}. Instalacja
                         obejmuje dobór falownika hybrydowego, magazynu energii {detail.batteryKwh} kWh z funkcją
                         zasilania awaryjnego (EPS/Backup) oraz pełną obsługę przyłączeniową w sieci{' '}
                         <strong>{detail.osdOperator}</strong>.
+                        {detail.notes ? (
+                          <>
+                            <br />
+                            <strong>Uwagi z audytu:</strong> {detail.notes}
+                          </>
+                        ) : null}
                       </p>
-                      <h3>Etapy procesu wdrożeniowego</h3>
+                      <h3>Etapy procesu wdrożeniowego (kliknij etap na górze lub zmień poniżej)</h3>
                       {[
                         [
                           '1. Audyt techniczny i projekt wykonawczy',
@@ -1211,7 +1308,9 @@ export default function App() {
                     <div className="panel employee-card" key={e.name}>
                       <Avatar name={e.name} color={e.color} />
                       <h3>{e.name}</h3>
-                      <p>{e.role}</p>
+                      <p>
+                        {e.role} · Brygada: <strong>{detail.installTeam}</strong>
+                      </p>
                       <Badge>{e.systemRole.toUpperCase()}</Badge>
                     </div>
                   ))}
@@ -1604,6 +1703,21 @@ export default function App() {
               />
               {clientDetail ? (
                 <>
+                  <div className="quick-actions">
+                    <Button onClick={() => open('Klient', clientDetail)}>
+                      Edytuj dane inwestora (SQL)
+                    </Button>
+                    <Button onClick={() => open('Zadanie')}>
+                      <Icon name="plus" size={14} />
+                      Dodaj lead dla klienta
+                    </Button>
+                    {currentRole !== 'salesman' && (
+                      <Button onClick={() => open('Realizacja')}>
+                        <Icon name="plus" size={14} />
+                        Nowa instalacja OZE
+                      </Button>
+                    )}
+                  </div>
                   <div className="detail-stats">
                     <div>
                       <small>Osoba kontaktowa</small>
@@ -1611,7 +1725,9 @@ export default function App() {
                     </div>
                     <div>
                       <small>Telefon / E-mail</small>
-                      <strong>{clientDetail.phone}</strong>
+                      <strong>
+                        {clientDetail.phone} · {clientDetail.email}
+                      </strong>
                     </div>
                     <div>
                       <small>Operator sieci OSD</small>
@@ -1626,28 +1742,15 @@ export default function App() {
                       <strong>{clientDetail.ownerName || 'Aleksander Morawski'}</strong>
                     </div>
                     <div>
-                      <small>Status klienta</small>
+                      <small>Status klienta ({clientDetail.projects} obiektów)</small>
                       <Badge>{clientDetail.status}</Badge>
                     </div>
                   </div>
                   <Section title="Instalacje OZE przypisane do klienta">
                     {projectTable(projects.filter(p => p.client === clientDetail.name), true)}
                   </Section>
-                  <Section title="Historia kontaktów, umów i dokumentów">
-                    <div className="prose">
-                      <p>
-                        <strong>24 października</strong> — Przekazano komplet dokumentów przyłączeniowych do operatora{' '}
-                        {clientDetail.osd} dla {clientDetail.contact}.
-                      </p>
-                      <p>
-                        <strong>18 października</strong> — Zatwierdzono dobór magazynu energii oraz harmonogram dostawy
-                        komponentów na obiekt ({clientDetail.address}).
-                      </p>
-                      <p>
-                        <strong>01 października</strong> — Przeprowadzono wizję lokalną (audyt dachu i rozdzielnicy) oraz
-                        podpisano umowę przez Autenti.
-                      </p>
-                    </div>
+                  <Section title="Leady i zadania przypisane do klienta">
+                    {taskList(tasks.filter(t => t.project === clientDetail.name))}
                   </Section>
                 </>
               ) : (
@@ -1675,7 +1778,9 @@ export default function App() {
                           <th>Telefon</th>
                           <th>Handlowiec</th>
                           <th>Finansowanie</th>
+                          <th>Obiekty OZE</th>
                           <th>Status</th>
+                          <th />
                         </tr>
                       </thead>
                       <tbody>
@@ -1702,7 +1807,22 @@ export default function App() {
                               <td>{c.ownerName}</td>
                               <td>{c.financing}</td>
                               <td>
+                                <strong>{c.projects}</strong> szt.
+                              </td>
+                              <td>
                                 <Badge>{c.status}</Badge>
+                              </td>
+                              <td>
+                                <button
+                                  className="icon-button"
+                                  aria-label={`Edytuj ${c.name}`}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    open('Klient', c);
+                                  }}
+                                >
+                                  <Icon name="more" size={16} />
+                                </button>
                               </td>
                             </tr>
                           ))}
@@ -1729,8 +1849,20 @@ export default function App() {
                     ? `${employee.role} · Dział: ${employee.department} · Rola systemowa: ${employee.systemRole.toUpperCase()}`
                     : 'Zarządzanie uprawnieniami (Admin, Manager, Salesman) i obciążeniem zespołów w bazie SQLite.'
                 }
-                button={employee ? 'Wszyscy pracownicy' : 'Raport obłożenia ekip'}
-                onClick={() => (employee ? setEmployee(null) : navigate('Raporty OZE'))}
+                button={
+                  employee
+                    ? 'Wszyscy pracownicy'
+                    : currentRole === 'admin'
+                      ? 'Dodaj pracownika (SQL)'
+                      : 'Raport obłożenia ekip'
+                }
+                onClick={() =>
+                  employee
+                    ? setEmployee(null)
+                    : currentRole === 'admin'
+                      ? open('Pracownik')
+                      : navigate('Raporty OZE')
+                }
               />
               {employee ? (
                 <>
@@ -1750,7 +1882,8 @@ export default function App() {
                             const snap = await DataLayer.updateUserRole(
                               employee.id,
                               newRole,
-                              currentUser.name
+                              currentUser.name,
+                              employee.workload
                             );
                             applySnapshot(snap);
                             setEmployee({ ...employee, systemRole: newRole });
@@ -1765,6 +1898,30 @@ export default function App() {
                         </select>
                       ) : (
                         <Badge>{employee.systemRole.toUpperCase()}</Badge>
+                      )}
+                    </div>
+                    <div>
+                      <small>Alokacja / Obciążenie (%)</small>
+                      {currentRole === 'admin' ? (
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={employee.workload}
+                          onChange={async e => {
+                            const w = Math.min(100, Math.max(0, Number(e.target.value) || 0));
+                            setEmployee({ ...employee, workload: w });
+                            const snap = await DataLayer.updateUserRole(
+                              employee.id,
+                              employee.systemRole,
+                              currentUser.name,
+                              w
+                            );
+                            applySnapshot(snap);
+                          }}
+                        />
+                      ) : (
+                        <strong>{employee.workload}%</strong>
                       )}
                     </div>
                     <div>
@@ -1837,10 +1994,10 @@ export default function App() {
             </>
           ) : page === 'Grafik Montaży' ? (
             <>
-              {/* Installation & Technical Audit Calendar */}
+              {/* Installation & Technical Audit Calendar backed by SQLite calendar_events */}
               <PageHeading
                 title="Grafik Montaży, Audytów i Odbiorów"
-                subtitle="Planowanie wyjazdów ekip instalacyjnych, dostaw sprzętu i wizji lokalnych."
+                subtitle="Wszystkie terminy są przechowywane w tabeli SQLite `calendar_events`."
                 button="Zaplanuj wyjazd / montaż"
                 onClick={() => open('Wydarzenie')}
               />
@@ -1873,44 +2030,43 @@ export default function App() {
                 <div className="calendar-grid">
                   {Array.from({ length: week ? 7 : 35 }, (_, i) => {
                     const day = week ? i + 21 : i;
+                    const normalizedMonth = ((month % 12) + 12) % 12;
+                    const dayEvents = events.filter(ev => {
+                      const d = new Date(ev.date + 'T12:00:00');
+                      return d.getDate() === day && d.getMonth() === normalizedMonth;
+                    });
                     return (
-                      <div className={`calendar-cell ${day === 24 && month === 9 ? 'today-cell' : ''}`} key={i}>
+                      <div className={`calendar-cell ${day === 24 && normalizedMonth === 9 ? 'today-cell' : ''}`} key={i}>
                         <span className={day < 1 || day > 31 ? 'muted' : ''}>
                           {day < 1 ? 30 : day > 31 ? day - 31 : day}
                         </span>
-                        {[3, 8, 15, 21, 24, 28, 30].includes(day) && (
-                          <button
-                            className={`calendar-event ${day % 2 ? 'blue' : 'purple'}`}
-                            onClick={() => {
-                              if (day === 28) {
-                                setPage('Realizacje OZE');
-                                setDetail(projects[2]);
-                              } else {
-                                notify('Wyjazd ekipy Mazowsze-1 · Montaż PV 9.8 kWp + Magazyn 10 kWh');
-                              }
-                            }}
-                          >
-                            {day === 28
-                              ? 'Odbiór B2B 49.5 kWp (Enea)'
-                              : day === 30
-                                ? 'Montaż BESS 10 kWh Pruszków'
-                                : '08:00 Audyt i montaż PV'}
-                          </button>
-                        )}
-                        {events
-                          .filter(ev => {
-                            const d = new Date(ev.date + 'T12:00:00');
-                            return d.getDate() === day && d.getMonth() === (((month % 12) + 12) % 12);
-                          })
-                          .map((ev, j) => (
+                        {dayEvents.map((ev, j) => {
+                          const eventColor =
+                            ev.eventType === 'Odbiór OSD'
+                              ? 'purple'
+                              : ev.eventType === 'Audyt'
+                                ? 'orange'
+                                : 'blue';
+                          return (
                             <button
-                              key={j}
-                              className="calendar-event teal"
-                              onClick={() => notify(`${ev.name} · ${ev.date}`)}
+                              key={ev.id || j}
+                              className={`calendar-event ${eventColor}`}
+                              onClick={() => {
+                                const matched = projects.find(
+                                  p => p.id === ev.installationId || p.client === ev.client
+                                );
+                                if (matched) {
+                                  setDetail(matched);
+                                  setPage('Realizacje OZE');
+                                } else {
+                                  notify(`${ev.name} · Termin: ${ev.date} (${ev.eventType || 'Montaż'})`);
+                                }
+                              }}
                             >
                               {ev.name}
                             </button>
-                          ))}
+                          );
+                        })}
                       </div>
                     );
                   })}
@@ -1940,11 +2096,11 @@ export default function App() {
                 button="Eksportuj bazę OZE (CSV)"
                 onClick={() => {
                   const csv =
-                    'Instalacja,Klient,Typ_Systemu,Moc_kWp,Magazyn_kWh,Operator_OSD,Dotacja,Status_Dotacji,Etap,Postep\n' +
+                    'Instalacja,Klient,Typ_Systemu,Moc_kWp,Magazyn_kWh,Operator_OSD,Dotacja,Status_Dotacji,Etap,Postep,Wartosc_Umowy\n' +
                     projects
                       .map(
                         p =>
-                          `"${p.name}","${p.client}","${p.systemType}","${p.powerKwp}","${p.batteryKwh}","${p.osdOperator}","${p.subsidyProgram}","${p.subsidyStatus}","${p.status}","${p.progress}%"`
+                          `"${p.name}","${p.client}","${p.systemType}","${p.powerKwp}","${p.batteryKwh}","${p.osdOperator}","${p.subsidyProgram}","${p.subsidyStatus}","${p.status}","${p.progress}%","${p.contractValue}"`
                       )
                       .join('\n');
                   const a = document.createElement('a');
@@ -1957,10 +2113,30 @@ export default function App() {
               />
               <div className="kpi-grid">
                 {[
-                  ['Konwersja Audyt ➔ Umowa', '64%', '+8% w tym miesiącu'],
-                  ['Udział PV z magazynem BESS', '83%', 'Dzięki dotacji Mój Prąd 6.0'],
-                  ['Średni czas przyłączenia OSD', '19 dni', 'O 4 dni szybciej niż w Q3'],
-                  ['Wykorzystanie ekip monterskich', '81%', '18 brygad aktywnych w terenie'],
+                  [
+                    'Łączna moc portfela OZE',
+                    `${projects.reduce((s, p) => s + p.powerKwp, 0).toFixed(1)} kWp`,
+                    `${projects.length} aktywnych obiektów w SQLite`,
+                  ],
+                  [
+                    'Udział PV z magazynem BESS',
+                    `${Math.round(
+                      (projects.filter(p => p.batteryKwh > 0).length / Math.max(1, projects.length)) * 100
+                    )}%`,
+                    `Łącznie ${projects.reduce((s, p) => s + p.batteryKwh, 0)} kWh pojemności`,
+                  ],
+                  [
+                    'Wnioski wypłacone / odebrane',
+                    `${projects.filter(p => p.subsidyStatus === 'Wypłacono' || p.status === 'Odebrane').length} szt.`,
+                    'Zsynchronizowane z NFOŚiGW / OSD',
+                  ],
+                  [
+                    'Średnie obłożenie zespołów',
+                    `${Math.round(
+                      users.reduce((s, u) => s + u.workload, 0) / Math.max(1, users.length)
+                    )}%`,
+                    `${users.length} pracowników w bazie RBAC`,
+                  ],
                 ].map(([t, v, s]) => (
                   <div className="kpi-card" key={t}>
                     <p>{t}</p>
@@ -1972,7 +2148,7 @@ export default function App() {
               <div className="detail-grid">
                 <Section
                   title="Zainstalowana moc PV + Magazyny energii (ostatnie 6 mies.)"
-                  subtitle="Dynamika wdrożeń fotowoltaiki (niebieski) do reklamacji/korekt OSD (pomarańczowy)"
+                  subtitle="Dynamika wdrożeń fotowoltaiki (turkus SM Project) do zgłoszeń OSD (złoty SM Project)"
                 >
                   <div className="bar-chart">
                     {[52, 68, 64, 84, 79, 94].map((n, i) => (
@@ -2020,7 +2196,9 @@ export default function App() {
                       <Badge>{s}</Badge>
                       <strong>{projects.filter(p => p.status === s).length}</strong>
                       <Progress
-                        value={Math.round((projects.filter(p => p.status === s).length / projects.length) * 100)}
+                        value={Math.round(
+                          (projects.filter(p => p.status === s).length / Math.max(1, projects.length)) * 100
+                        )}
                       />
                     </div>
                   ))}
@@ -2033,6 +2211,11 @@ export default function App() {
               <PageHeading
                 title="Ustawienia Systemu, RBAC i Warstwa Bazy Danych SQLite"
                 subtitle="Zarządzanie silnikiem SQLite (database/oze_crm.sqlite), uprawnieniami ról oraz konfiguracją OZE."
+                button="Pobierz kopię SQL (JSON)"
+                onClick={async () => {
+                  await DataLayer.downloadBackup();
+                  notify('Pobrano pełny zrzut bazy danych SQLite.');
+                }}
               />
 
               <Section
@@ -2069,7 +2252,7 @@ export default function App() {
                   </div>
                   <div>
                     <small>Tabela: calendar_events</small>
-                    <strong>{events.length + 7} terminów</strong>
+                    <strong>{events.length} terminów</strong>
                   </div>
                   <div>
                     <small>Tabela: activity_logs</small>
@@ -2079,42 +2262,69 @@ export default function App() {
               </Section>
 
               <Section
-                title="Konfiguracja organizacji (Polska)"
-                subtitle="Dane rejestrowe do automatycznego generowania umów i pełnomocnictw OSD"
+                title="Konfiguracja organizacji i automatyzacji lejka (Tabela SQL `settings`)"
+                subtitle="Zmiany zapisywane są bezpośrednio w bazie SQLite i sterują automatycznym tworzeniem realizacji OZE"
               >
                 <form
                   className="settings-form"
-                  onSubmit={e => {
+                  onSubmit={async e => {
                     e.preventDefault();
-                    notify('Ustawienia systemu SM-OZE Polska zostały zapisane.');
+                    const snap = await DataLayer.saveSettings(settings, currentUser.name);
+                    applySnapshot(snap);
+                    notify('Konfiguracja została trwale zapisana w tabeli SQLite `settings`.');
                   }}
                 >
                   <label>
                     Nazwa spółki / organizacji OZE
-                    <input defaultValue="SM-OZE Polska Sp. z o.o. (300 użytkowników)" required />
+                    <input
+                      value={settings.companyName}
+                      onChange={e => setSettings({ ...settings, companyName: e.target.value })}
+                      required
+                    />
                   </label>
                   <label>
                     Główny administrator / Dyrektor Operacyjny
-                    <input defaultValue="Aleksander Morawski" required />
+                    <input
+                      value={settings.adminName}
+                      onChange={e => setSettings({ ...settings, adminName: e.target.value })}
+                      required
+                    />
                   </label>
                   <label>
                     E-mail biura obsługi dotacji i OSD
-                    <input defaultValue="dotacje@sm-oze.pl" type="email" required />
+                    <input
+                      value={settings.officeEmail}
+                      onChange={e => setSettings({ ...settings, officeEmail: e.target.value })}
+                      type="email"
+                      required
+                    />
                   </label>
                   <label>
-                    Domyślny program dotacji dla instalacji hybrydowych B2C
-                    <select defaultValue="Mój Prąd 6.0">
+                    Domyślny program dotacji dla nowych instalacji B2C
+                    <select
+                      value={settings.defaultSubsidy}
+                      onChange={e =>
+                        setSettings({
+                          ...settings,
+                          defaultSubsidy: e.target.value as Project['subsidyProgram'],
+                        })
+                      }
+                    >
                       <option>Mój Prąd 6.0</option>
                       <option>Czyste Powietrze</option>
                       <option>Ciepłe Mieszkanie</option>
                     </select>
                   </label>
                   <label className="checkbox-label">
-                    <input type="checkbox" defaultChecked />
-                    Automatycznie twórz realizację montażową i wniosek OSD po podpisaniu umowy przez Handlowca
+                    <input
+                      type="checkbox"
+                      checked={settings.autoConvertLead}
+                      onChange={e => setSettings({ ...settings, autoConvertLead: e.target.checked })}
+                    />
+                    Automatycznie twórz realizację montażową, wniosek OSD i termin audytu po podpisaniu umowy przez Handlowca
                   </label>
                   <Button variant="primary" type="submit">
-                    Zapisz konfigurację
+                    Zapisz konfigurację w SQLite
                   </Button>
                 </form>
               </Section>
@@ -2123,7 +2333,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Modal dialog for creating and editing OZE installations, leads (with OZE calculator), clients, and schedule items */}
+      {/* Modal dialog for creating and editing OZE installations, leads, clients, employees, and schedule items */}
       {modal && (
         <div
           className="modal-overlay"
@@ -2139,8 +2349,8 @@ export default function App() {
                 </h2>
                 <p>
                   {modal === 'Zadanie'
-                    ? 'Wprowadź dane leada i skorzystaj z szybkiego kalkulatora doboru mocy OZE.'
-                    : 'Nowy rekord zostanie natychmiast zapisany w bazie database/oze_crm.sqlite.'}
+                    ? 'Wprowadź dane leada i skorzystaj z kalkulatora doboru mocy OZE.'
+                    : 'Wszystkie pola zostaną trwale zapisane w bazie database/oze_crm.sqlite.'}
                 </p>
               </div>
               <button className="icon-button" aria-label="Zamknij okno" onClick={() => setModal(null)}>
@@ -2156,37 +2366,63 @@ export default function App() {
 
                 if (modal === 'Realizacja') {
                   const existingProj = editing && 'powerKwp' in editing ? editing : null;
+                  const rawDeadline = String(form.get('deadline') || '');
+                  const formattedDeadline = rawDeadline.includes('-')
+                    ? new Date(rawDeadline + 'T12:00:00').toLocaleDateString('pl-PL', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                      })
+                    : existingProj?.deadline || '25 lis 2024';
+                  const statusVal = String(form.get('status') || 'Audyt i projekt');
                   const p: Project = {
                     id: editing?.id || Date.now(),
                     name,
                     client: String(form.get('client')),
                     manager: String(form.get('manager')),
-                    status: String(form.get('status')),
+                    status: statusVal,
                     priority: String(form.get('priority')),
                     start: existingProj ? existingProj.start : '24 paź 2024',
-                    deadline: new Date(String(form.get('deadline')) + 'T12:00:00').toLocaleDateString('pl-PL', {
-                      day: '2-digit',
-                      month: 'short',
-                      year: 'numeric',
-                    }),
-                    progress: existingProj ? existingProj.progress : 15,
+                    deadline: formattedDeadline,
+                    progress:
+                      statusVal === 'Odebrane'
+                        ? 100
+                        : statusVal === 'Zgłoszenie OSD / Dotacja'
+                          ? 90
+                          : statusVal === 'Montaż w toku'
+                            ? 70
+                            : statusVal === 'Kompletacja sprzętu'
+                              ? 45
+                              : existingProj
+                                ? existingProj.progress
+                                : 15,
                     color: existingProj ? existingProj.color : 'blue',
                     initials: name.slice(0, 2).toUpperCase(),
                     systemType: String(form.get('systemType') || 'PV + Magazyn energii'),
                     powerKwp: Number(form.get('powerKwp') || calcKwp),
                     batteryKwh: Number(form.get('batteryKwh') || calcKwh),
                     osdOperator: (form.get('osdOperator') as Project['osdOperator']) || 'PGE',
-                    subsidyProgram: (form.get('subsidyProgram') as Project['subsidyProgram']) || 'Mój Prąd 6.0',
-                    subsidyStatus: existingProj ? existingProj.subsidyStatus : 'W przygotowaniu',
-                    roofType: existingProj ? existingProj.roofType : 'Dachówka ceramiczna',
+                    subsidyProgram:
+                      (form.get('subsidyProgram') as Project['subsidyProgram']) || settings.defaultSubsidy,
+                    subsidyStatus:
+                      (form.get('subsidyStatus') as Project['subsidyStatus']) ||
+                      (existingProj ? existingProj.subsidyStatus : 'W przygotowaniu'),
+                    roofType:
+                      (form.get('roofType') as Project['roofType']) ||
+                      (existingProj ? existingProj.roofType : 'Dachówka ceramiczna'),
                     contractValue: String(
                       form.get('contractValue') ||
-                        `${Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100} PLN`
+                        `${(Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100).toLocaleString('pl-PL')} PLN`
                     ),
-                    installTeam: existingProj ? existingProj.installTeam : 'Ekipa Mazowsze-1',
-                    voivodeship: existingProj ? existingProj.voivodeship : 'Mazowieckie',
+                    installTeam: String(
+                      form.get('installTeam') || (existingProj ? existingProj.installTeam : 'Ekipa Mazowsze-1')
+                    ),
+                    voivodeship: String(
+                      form.get('voivodeship') || (existingProj ? existingProj.voivodeship : 'Mazowieckie')
+                    ),
+                    notes: String(form.get('description') || ''),
                   };
-                  const snap = await DataLayer.saveInstallation(p, currentUser.name);
+                  const snap = await DataLayer.saveInstallation(p, currentUser.name, currentRole);
                   applySnapshot(snap);
                   if (detail?.id === p.id) setDetail(p);
                 } else if (modal === 'Zadanie') {
@@ -2199,8 +2435,9 @@ export default function App() {
                     priority: String(form.get('priority')),
                     status: statusVal,
                     due: String(form.get('deadline')),
-                    leadSource: 'Kalkulator OZE / CRM',
+                    leadSource: String(form.get('leadSource') || 'Kalkulator WWW'),
                     estimatedPower: `${calcKwp} kWp + ${calcKwh} kWh`,
+                    notes: String(form.get('description') || ''),
                   };
                   const snap = await DataLayer.saveLead(t, currentUser.name);
                   applySnapshot(snap);
@@ -2212,28 +2449,54 @@ export default function App() {
                     return;
                   }
                 } else if (modal === 'Klient') {
+                  const existingClient = editing && 'contact' in editing ? editing : null;
                   const newClient: ClientRecord = {
-                    id: Date.now(),
+                    id: existingClient ? existingClient.id : Date.now(),
                     name,
                     contact: String(form.get('contact')),
                     email: String(form.get('email')),
                     phone: String(form.get('phone')),
-                    projects: 0,
-                    status: 'Aktywny',
-                    color: 'blue',
+                    projects: existingClient ? existingClient.projects : 0,
+                    status: String(form.get('status') || 'Aktywny'),
+                    color: existingClient ? existingClient.color : 'blue',
                     address: String(form.get('address') || 'ul. Słoneczna 1, Warszawa'),
-                    voivodeship: 'Mazowieckie',
-                    osd: 'PGE',
-                    financing: 'Dotacja + Gotówka',
-                    ownerName: currentUser.name,
+                    voivodeship: String(form.get('voivodeship') || 'Mazowieckie'),
+                    osd: (form.get('osd') as ClientRecord['osd']) || 'PGE',
+                    financing: String(form.get('financing') || 'Dotacja + Gotówka'),
+                    ownerName: String(form.get('ownerName') || currentUser.name),
                   };
                   const snap = await DataLayer.saveClient(newClient, currentUser.name);
                   applySnapshot(snap);
+                  if (clientDetail?.id === newClient.id) setClientDetail(newClient);
+                } else if (modal === 'Pracownik') {
+                  const existingEmp = editing && 'systemRole' in editing ? editing : null;
+                  const newEmp: Employee = {
+                    id: existingEmp ? existingEmp.id : Date.now(),
+                    name,
+                    email: String(form.get('email') || 'pracownik@sm-oze.pl'),
+                    systemRole: (form.get('systemRole') as SystemRole) || 'salesman',
+                    role: String(form.get('role') || 'Handlowiec OZE (Doradca D2D)'),
+                    department: String(form.get('department') || 'Sprzedaż D2D'),
+                    region: String(form.get('region') || 'Mazowieckie'),
+                    workload: Number(form.get('workload') || 65),
+                    color: existingEmp ? existingEmp.color : 'teal',
+                  };
+                  const snap = await DataLayer.saveUser(newEmp, currentUser.name);
+                  applySnapshot(snap);
                 } else {
-                  const snap = await DataLayer.saveEvent({ name, date: String(form.get('deadline')) });
+                  const snap = await DataLayer.saveEvent(
+                    {
+                      name,
+                      date: String(form.get('deadline')),
+                      eventType: (form.get('eventType') as CalendarEvent['eventType']) || 'Montaż',
+                      client: String(form.get('client') || ''),
+                    },
+                    currentUser.name
+                  );
                   applySnapshot(snap);
                 }
                 setModal(null);
+                setEditing(null);
                 notify(`Zapisano w bazie SQLite: ${name}`);
               }}
             >
@@ -2241,9 +2504,13 @@ export default function App() {
                 <label>
                   {modal === 'Klient'
                     ? 'Inwestor (Imię i nazwisko lub nazwa firmy)'
-                    : modal === 'Realizacja'
-                      ? 'Nazwa inwestycji OZE (np. PV 10 kWp + Magazyn — Miasto)'
-                      : 'Temat leada sprzedażowego / audytu'}{' '}
+                    : modal === 'Pracownik'
+                      ? 'Imię i nazwisko pracownika / lidera ekipy'
+                      : modal === 'Realizacja'
+                        ? 'Nazwa inwestycji OZE (np. PV 10 kWp + Magazyn — Miasto)'
+                        : modal === 'Wydarzenie'
+                          ? 'Nazwa wyjazdu / montażu / audytu'
+                          : 'Temat leada sprzedażowego / audytu'}{' '}
                   <span>*</span>
                   <input
                     autoFocus
@@ -2256,25 +2523,204 @@ export default function App() {
 
                 {modal === 'Klient' ? (
                   <>
-                    <label>
-                      Osoba decyzyjna / kontaktowa <span>*</span>
-                      <input name="contact" required placeholder="Imię i nazwisko" />
-                    </label>
+                    <div className="form-grid">
+                      <label>
+                        Osoba decyzyjna / kontaktowa <span>*</span>
+                        <input
+                          name="contact"
+                          required
+                          defaultValue={editing && 'contact' in editing ? editing.contact : ''}
+                          placeholder="Imię i nazwisko"
+                        />
+                      </label>
+                      <label>
+                        Handlowiec prowadzący (Opiekun)
+                        <select
+                          name="ownerName"
+                          defaultValue={
+                            editing && 'ownerName' in editing ? editing.ownerName : currentUser.name
+                          }
+                        >
+                          {users.map(u => (
+                            <option key={u.id}>{u.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
                     <label>
                       Adres montażu inwestycji <span>*</span>
-                      <input name="address" required placeholder="ul. Przykładowa 10, 00-000 Miasto" />
+                      <input
+                        name="address"
+                        required
+                        defaultValue={editing && 'address' in editing ? editing.address : ''}
+                        placeholder="ul. Przykładowa 10, 00-000 Miasto"
+                      />
                     </label>
                     <div className="form-grid">
                       <label>
                         Adres e-mail <span>*</span>
-                        <input name="email" required type="email" placeholder="klient@domena.pl" />
+                        <input
+                          name="email"
+                          required
+                          type="email"
+                          defaultValue={editing && 'email' in editing ? editing.email : ''}
+                          placeholder="klient@domena.pl"
+                        />
                       </label>
                       <label>
                         Telefon kontaktowy <span>*</span>
-                        <input name="phone" required placeholder="+48 500 000 000" />
+                        <input
+                          name="phone"
+                          required
+                          defaultValue={editing && 'phone' in editing ? editing.phone : ''}
+                          placeholder="+48 500 000 000"
+                        />
+                      </label>
+                      <label>
+                        Województwo
+                        <select
+                          name="voivodeship"
+                          defaultValue={
+                            editing && 'voivodeship' in editing ? editing.voivodeship : 'Mazowieckie'
+                          }
+                        >
+                          {polishVoivodeships.map(v => (
+                            <option key={v}>{v}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Operator sieci OSD
+                        <select
+                          name="osd"
+                          defaultValue={editing && 'osd' in editing ? editing.osd : 'PGE'}
+                        >
+                          {osdOperators.map(o => (
+                            <option key={o}>{o}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Model finansowania
+                        <select
+                          name="financing"
+                          defaultValue={
+                            editing && 'financing' in editing ? editing.financing : 'Dotacja + Gotówka'
+                          }
+                        >
+                          <option>Dotacja + Gotówka</option>
+                          <option>Mój Prąd 6.0 + Gotówka</option>
+                          <option>Czyste Powietrze (Prefinansowanie)</option>
+                          <option>Kredyt OZE (Alior)</option>
+                          <option>Leasing (Santander)</option>
+                          <option>Gotówka</option>
+                        </select>
+                      </label>
+                      <label>
+                        Status klienta
+                        <select
+                          name="status"
+                          defaultValue={editing && 'status' in editing ? editing.status : 'Aktywny'}
+                        >
+                          <option>Aktywny</option>
+                          <option>W realizacji</option>
+                          <option>Zakończony</option>
+                        </select>
                       </label>
                     </div>
                   </>
+                ) : modal === 'Pracownik' ? (
+                  <div className="form-grid">
+                    <label>
+                      Służbowy adres e-mail <span>*</span>
+                      <input
+                        name="email"
+                        type="email"
+                        required
+                        defaultValue={editing && 'email' in editing ? editing.email : ''}
+                        placeholder="imie.nazwisko@sm-oze.pl"
+                      />
+                    </label>
+                    <label>
+                      Rola systemowa (RBAC)
+                      <select
+                        name="systemRole"
+                        defaultValue={
+                          editing && 'systemRole' in editing ? editing.systemRole : 'salesman'
+                        }
+                      >
+                        <option value="salesman">SALESMAN (Handlowiec)</option>
+                        <option value="manager">MANAGER (Koordynator)</option>
+                        <option value="admin">ADMIN (Dyrektor)</option>
+                      </select>
+                    </label>
+                    <label>
+                      Stanowisko
+                      <input
+                        name="role"
+                        required
+                        defaultValue={
+                          editing && 'role' in editing ? editing.role : 'Handlowiec OZE (Doradca D2D)'
+                        }
+                      />
+                    </label>
+                    <label>
+                      Dział
+                      <select
+                        name="department"
+                        defaultValue={
+                          editing && 'department' in editing ? editing.department : 'Sprzedaż D2D'
+                        }
+                      >
+                        <option>Sprzedaż D2D</option>
+                        <option>Audyt i Projekty</option>
+                        <option>Ekipy Monterskie</option>
+                        <option>Dotacje i OSD</option>
+                        <option>Zarząd i Operacje</option>
+                      </select>
+                    </label>
+                    <label>
+                      Region operacyjny
+                      <input
+                        name="region"
+                        required
+                        defaultValue={editing && 'region' in editing ? editing.region : 'Mazowieckie'}
+                      />
+                    </label>
+                    <label>
+                      Obciążenie pracą (%)
+                      <input
+                        name="workload"
+                        type="number"
+                        min={0}
+                        max={100}
+                        defaultValue={editing && 'workload' in editing ? editing.workload : 70}
+                      />
+                    </label>
+                  </div>
+                ) : modal === 'Wydarzenie' ? (
+                  <div className="form-grid">
+                    <label>
+                      Typ wyjazdu w grafiku
+                      <select name="eventType" defaultValue="Montaż">
+                        <option value="Montaż">Montaż PV / Magazynu</option>
+                        <option value="Audyt">Audyt techniczny u klienta</option>
+                        <option value="Odbiór OSD">Odbiór OSD / Licznik</option>
+                      </select>
+                    </label>
+                    <label>
+                      Powiązany inwestor
+                      <select name="client" defaultValue={clients[0]?.name}>
+                        {clients.map(c => (
+                          <option key={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Data wyjazdu <span>*</span>
+                      <input required name="deadline" type="date" defaultValue="2024-10-29" />
+                    </label>
+                  </div>
                 ) : (
                   <>
                     {/* Built-in OZE Power & Battery Calculator for Salesmen and Managers */}
@@ -2301,14 +2747,149 @@ export default function App() {
                     )}
 
                     {modal === 'Realizacja' ? (
-                      <>
+                      <div className="form-grid">
+                        <label>
+                          Inwestor / Klient <span>*</span>
+                          <select
+                            name="client"
+                            defaultValue={
+                              editing && 'client' in editing
+                                ? editing.client
+                                : clientDetail?.name || roleScopedClients[0]?.name
+                            }
+                          >
+                            {clients.map(c => (
+                              <option key={c.id}>{c.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Typ systemu OZE
+                          <select
+                            name="systemType"
+                            defaultValue={
+                              editing && 'systemType' in editing ? editing.systemType : 'PV + Magazyn energii'
+                            }
+                          >
+                            <option>PV + Magazyn energii</option>
+                            <option>Dom pasywny + Pompa + PV</option>
+                            <option>Dom energooszczędny + PV</option>
+                            <option>Fotowoltaika B2B + BESS</option>
+                            <option>Magazyn energii (Rozbudowa)</option>
+                          </select>
+                        </label>
+                        <label>
+                          Moc instalacji PV (kWp)
+                          <input
+                            name="powerKwp"
+                            type="number"
+                            step="0.1"
+                            value={calcKwp}
+                            onChange={e => setCalcKwp(Number(e.target.value))}
+                          />
+                        </label>
+                        <label>
+                          Pojemność magazynu (kWh)
+                          <input
+                            name="batteryKwh"
+                            type="number"
+                            step="1"
+                            value={calcKwh}
+                            onChange={e => setCalcKwh(Number(e.target.value))}
+                          />
+                        </label>
+                        <label>
+                          Operator sieci (OSD)
+                          <select
+                            name="osdOperator"
+                            defaultValue={editing && 'osdOperator' in editing ? editing.osdOperator : 'PGE'}
+                          >
+                            {osdOperators.map(osd => (
+                              <option key={osd}>{osd}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Program dotacji
+                          <select
+                            name="subsidyProgram"
+                            defaultValue={
+                              editing && 'subsidyProgram' in editing
+                                ? editing.subsidyProgram
+                                : settings.defaultSubsidy
+                            }
+                          >
+                            {subsidyPrograms.map(prog => (
+                              <option key={prog}>{prog}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Poszycie dachu / Konstrukcja
+                          <select
+                            name="roofType"
+                            defaultValue={
+                              editing && 'roofType' in editing ? editing.roofType : 'Dachówka ceramiczna'
+                            }
+                          >
+                            {roofTypes.map(r => (
+                              <option key={r}>{r}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Brygada monterska
+                          <select
+                            name="installTeam"
+                            defaultValue={
+                              editing && 'installTeam' in editing ? editing.installTeam : 'Ekipa Mazowsze-1'
+                            }
+                          >
+                            <option>Ekipa Mazowsze-1</option>
+                            <option>Ekipa Małopolska-2</option>
+                            <option>Ekipa Wielkopolska-1</option>
+                            <option>Ekipa Śląsk-3</option>
+                            <option>Ekipa Pomorze-1</option>
+                          </select>
+                        </label>
+                        <label>
+                          Województwo
+                          <select
+                            name="voivodeship"
+                            defaultValue={
+                              editing && 'voivodeship' in editing ? editing.voivodeship : 'Mazowieckie'
+                            }
+                          >
+                            {polishVoivodeships.map(v => (
+                              <option key={v}>{v}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Wartość umowy brutto (PLN)
+                          <input
+                            name="contractValue"
+                            defaultValue={
+                              editing && 'contractValue' in editing
+                                ? editing.contractValue
+                                : `${(
+                                    Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
+                                  ).toLocaleString('pl-PL')} PLN`
+                            }
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      modal === 'Zadanie' && (
                         <div className="form-grid">
                           <label>
-                            Inwestor / Klient <span>*</span>
+                            Inwestor / Klient docelowy <span>*</span>
                             <select
-                              name="client"
+                              name="project"
                               defaultValue={
-                                editing && 'client' in editing ? editing.client : roleScopedClients[0]?.name
+                                editing && 'project' in editing
+                                  ? editing.project
+                                  : clientDetail?.name || roleScopedClients[0]?.name || clients[0]?.name
                               }
                             >
                               {clients.map(c => (
@@ -2317,82 +2898,21 @@ export default function App() {
                             </select>
                           </label>
                           <label>
-                            Typ systemu OZE
+                            Źródło pozyskania leada
                             <select
-                              name="systemType"
+                              name="leadSource"
                               defaultValue={
-                                editing && 'systemType' in editing ? editing.systemType : 'PV + Magazyn energii'
+                                editing && 'leadSource' in editing ? editing.leadSource : 'Kalkulator WWW'
                               }
                             >
-                              <option>PV + Magazyn energii</option>
-                              <option>Dom pasywny + Pompa + PV</option>
-                              <option>Fotowoltaika B2B + BESS</option>
-                              <option>Magazyn energii (Rozbudowa)</option>
-                            </select>
-                          </label>
-                          <label>
-                            Moc instalacji PV (kWp)
-                            <input
-                              name="powerKwp"
-                              type="number"
-                              step="0.1"
-                              value={calcKwp}
-                              onChange={e => setCalcKwp(Number(e.target.value))}
-                            />
-                          </label>
-                          <label>
-                            Pojemność magazynu (kWh)
-                            <input
-                              name="batteryKwh"
-                              type="number"
-                              step="1"
-                              value={calcKwh}
-                              onChange={e => setCalcKwh(Number(e.target.value))}
-                            />
-                          </label>
-                          <label>
-                            Operator sieci (OSD)
-                            <select
-                              name="osdOperator"
-                              defaultValue={editing && 'osdOperator' in editing ? editing.osdOperator : 'PGE'}
-                            >
-                              {osdOperators.map(osd => (
-                                <option key={osd}>{osd}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            Program dotacji
-                            <select
-                              name="subsidyProgram"
-                              defaultValue={
-                                editing && 'subsidyProgram' in editing ? editing.subsidyProgram : 'Mój Prąd 6.0'
-                              }
-                            >
-                              {subsidyPrograms.map(prog => (
-                                <option key={prog}>{prog}</option>
-                              ))}
+                              <option>Kalkulator WWW</option>
+                              <option>Doradca D2D</option>
+                              <option>Call Center</option>
+                              <option>Polecenie klienta</option>
+                              <option>Lead Facebook OZE</option>
                             </select>
                           </label>
                         </div>
-                      </>
-                    ) : (
-                      modal === 'Zadanie' && (
-                        <label>
-                          Inwestor / Klient docelowy <span>*</span>
-                          <select
-                            name="project"
-                            defaultValue={
-                              editing && 'project' in editing
-                                ? editing.project
-                                : roleScopedClients[0]?.name || clients[0]?.name
-                            }
-                          >
-                            {clients.map(c => (
-                              <option key={c.id}>{c.name}</option>
-                            ))}
-                          </select>
-                        </label>
                       )
                     )}
 
@@ -2405,7 +2925,9 @@ export default function App() {
                             editing
                               ? 'manager' in editing
                                 ? editing.manager
-                                : editing.assignee
+                                : 'assignee' in editing
+                                  ? editing.assignee
+                                  : currentUser.name
                               : currentUser.name
                           }
                         >
@@ -2416,7 +2938,10 @@ export default function App() {
                       </label>
                       <label>
                         Priorytet
-                        <select name="priority" defaultValue={editing?.priority || 'Wysoki'}>
+                        <select
+                          name="priority"
+                          defaultValue={editing && 'priority' in editing ? editing.priority : 'Wysoki'}
+                        >
                           {priorityLevels.map(s => (
                             <option key={s}>{s}</option>
                           ))}
@@ -2424,7 +2949,10 @@ export default function App() {
                       </label>
                       <label>
                         Etap w lejku
-                        <select name="status" defaultValue={editing?.status}>
+                        <select
+                          name="status"
+                          defaultValue={editing && 'status' in editing ? editing.status : undefined}
+                        >
                           {(modal === 'Realizacja' ? projectStatuses : taskStatuses).map(s => (
                             <option key={s}>{s}</option>
                           ))}
@@ -2432,15 +2960,23 @@ export default function App() {
                       </label>
                       <label>
                         Planowany termin <span>*</span>
-                        <input required name="deadline" type="date" defaultValue="2024-11-15" />
+                        <input
+                          required
+                          name="deadline"
+                          type={modal === 'Zadanie' && editing ? 'text' : 'date'}
+                          defaultValue={
+                            editing && 'due' in editing ? editing.due : '2024-11-15'
+                          }
+                        />
                       </label>
                     </div>
 
                     <label>
-                      Uwagi techniczne (typ dachu, falownik, licznik OSD)
+                      Uwagi techniczne (typ dachu, falownik, licznik OSD — zapis w SQLite)
                       <textarea
                         name="description"
                         rows={2}
+                        defaultValue={editing && 'notes' in editing ? editing.notes : ''}
                         placeholder="Np. Dachówka ceramiczna, kąt 35°, falownik hybrydowy 10kW + moduł EPS..."
                       />
                     </label>
@@ -2449,6 +2985,11 @@ export default function App() {
               </div>
 
               <div className="modal-footer">
+                {editing && (modal === 'Realizacja' || modal === 'Zadanie' || modal === 'Klient') && (
+                  <Button type="button" onClick={handleDeleteRecord}>
+                    Usuń z SQL
+                  </Button>
+                )}
                 <Button type="button" onClick={() => setModal(null)}>
                   Anuluj
                 </Button>

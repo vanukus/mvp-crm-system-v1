@@ -36,6 +36,7 @@ export type Project = {
   contractValue: string;
   installTeam: string;
   voivodeship: string;
+  notes?: string;
 };
 
 export type Task = {
@@ -48,6 +49,7 @@ export type Task = {
   assignee: string;
   leadSource?: string;
   estimatedPower?: string;
+  notes?: string;
 };
 
 export type ClientRecord = {
@@ -66,6 +68,15 @@ export type ClientRecord = {
   ownerName?: string;
 };
 
+export type CalendarEvent = {
+  id?: number;
+  name: string;
+  date: string;
+  eventType?: 'Montaż' | 'Odbiór OSD' | 'Audyt';
+  client?: string;
+  installationId?: number;
+};
+
 export type ActivityLog = {
   id?: number;
   userName: string;
@@ -73,6 +84,22 @@ export type ActivityLog = {
   target: string;
   timeLabel: string;
   color: string;
+};
+
+export type SystemSettings = {
+  companyName: string;
+  adminName: string;
+  officeEmail: string;
+  defaultSubsidy: Project['subsidyProgram'];
+  autoConvertLead: boolean;
+};
+
+export const defaultSettings: SystemSettings = {
+  companyName: 'SM-OZE Polska Sp. z o.o. (300 użytkowników)',
+  adminName: 'Aleksander Morawski',
+  officeEmail: 'dotacje@sm-oze.pl',
+  defaultSubsidy: 'Mój Prąd 6.0',
+  autoConvertLead: true,
 };
 
 // Initial OZE installations (Realizacje) across Poland
@@ -99,6 +126,7 @@ export const initialProjects: Project[] = [
     contractValue: '58 400 PLN',
     installTeam: 'Ekipa Mazowsze-1',
     voivodeship: 'Mazowieckie',
+    notes: 'Falownik hybrydowy 10kW z modułem EPS (zasilanie awaryjne), dachówka ceramiczna kąt 35°.',
   },
   {
     id: 2,
@@ -122,6 +150,7 @@ export const initialProjects: Project[] = [
     contractValue: '112 000 PLN',
     installTeam: 'Ekipa Małopolska-2',
     voivodeship: 'Małopolskie',
+    notes: 'Pompa ciepła powietrze-woda 9kW + bufor CWU 300L + instalacja PV na blachodachówce.',
   },
   {
     id: 3,
@@ -145,6 +174,7 @@ export const initialProjects: Project[] = [
     contractValue: '214 500 PLN',
     installTeam: 'Ekipa Wielkopolska-1',
     voivodeship: 'Wielkopolskie',
+    notes: 'Konstrukcja gruntowa dwupodporowa, uzgodnienie ppoż. rzeczoznawcy zakończone.',
   },
   {
     id: 4,
@@ -168,6 +198,7 @@ export const initialProjects: Project[] = [
     contractValue: '42 000 PLN',
     installTeam: 'Ekipa Pomorze-1',
     voivodeship: 'Pomorskie',
+    notes: 'Rozbudowa istniejącej mikroinstalacji PV o magazyn LUNA2000 20 kWh.',
   },
   {
     id: 5,
@@ -191,6 +222,7 @@ export const initialProjects: Project[] = [
     contractValue: '86 900 PLN',
     installTeam: 'Ekipa Śląsk-3',
     voivodeship: 'Śląskie',
+    notes: 'Wniosek z prefinansowaniem WFOŚiGW Katowice — II próg dochodowy.',
   },
   {
     id: 6,
@@ -214,6 +246,7 @@ export const initialProjects: Project[] = [
     contractValue: '46 500 PLN',
     installTeam: 'Ekipa Mazowsze-1',
     voivodeship: 'Mazowieckie',
+    notes: 'Licznik dwukierunkowy PGE zamontowany, protokół PZO podpisany bez uwag.',
   },
 ];
 
@@ -229,6 +262,7 @@ export const initialTasks: Task[] = [
     assignee: 'Emilia Dąbrowska',
     leadSource: 'Kalkulator WWW',
     estimatedPower: '10.0 kWp + 15 kWh',
+    notes: 'Klient zainteresowany zasilaniem awaryjnym całego domu oraz dotacją Mój Prąd 6.0.',
   },
   {
     id: 2,
@@ -240,6 +274,7 @@ export const initialTasks: Task[] = [
     assignee: 'Sara Wiśniewska',
     leadSource: 'Call Center',
     estimatedPower: '12.4 kWp + 15 kWh',
+    notes: 'Wymagana weryfikacja mocy przyłączeniowej (obecnie 14 kW w Tauron).',
   },
   {
     id: 3,
@@ -251,6 +286,7 @@ export const initialTasks: Task[] = [
     assignee: 'Dawid Kowal',
     leadSource: 'Doradca D2D',
     estimatedPower: '49.5 kWp + 30 kWh',
+    notes: 'Oferta leasingowa Santander wysłana do zarządu.',
   },
   {
     id: 4,
@@ -262,6 +298,7 @@ export const initialTasks: Task[] = [
     assignee: 'Aleksander Morawski',
     leadSource: 'Polecenie klienta',
     estimatedPower: '0 kWp + 20 kWh',
+    notes: 'Klient posiada instalację z 2022 roku na net-billingu.',
   },
   {
     id: 5,
@@ -273,6 +310,7 @@ export const initialTasks: Task[] = [
     assignee: 'Emilia Dąbrowska',
     leadSource: 'Lead Facebook OZE',
     estimatedPower: '8.2 kWp + 10 kWh',
+    notes: 'Pilny kontakt telefoniczny przed końcem naboru.',
   },
   {
     id: 6,
@@ -284,6 +322,7 @@ export const initialTasks: Task[] = [
     assignee: 'Dawid Kowal',
     leadSource: 'Kalkulator WWW',
     estimatedPower: '9.8 kWp + 10 kWh',
+    notes: 'Drugi budynek inwestora (dom dla dzieci w Otwocku).',
   },
 ];
 
@@ -448,6 +487,66 @@ export const employees: Employee[] = [
     workload: 68,
     color: 'teal',
     region: 'Pomorskie',
+  },
+];
+
+// Initial schedule events stored in SQLite calendar_events table
+export const initialEvents: CalendarEvent[] = [
+  {
+    id: 1,
+    name: '08:00 Audyt dachu + pomiary PV',
+    date: '2024-10-03',
+    eventType: 'Audyt',
+    client: 'Marek Kowalski (Dom 160m²)',
+    installationId: 1,
+  },
+  {
+    id: 2,
+    name: 'Odbiór OSD + montaż licznika PGE',
+    date: '2024-10-08',
+    eventType: 'Odbiór OSD',
+    client: 'Tomasz Mazur — Legionowo',
+    installationId: 6,
+  },
+  {
+    id: 3,
+    name: 'Montaż konstrukcji PV + Pompa ciepła',
+    date: '2024-10-15',
+    eventType: 'Montaż',
+    client: 'Rodzina Nowak — Wieliczka',
+    installationId: 2,
+  },
+  {
+    id: 4,
+    name: 'Audyt rozbudowy magazynu 20 kWh',
+    date: '2024-10-21',
+    eventType: 'Audyt',
+    client: 'Piotr Zieliński — Gdańsk',
+    installationId: 4,
+  },
+  {
+    id: 5,
+    name: 'Kompletacja i wyjazd ekipy Śląsk-3',
+    date: '2024-10-24',
+    eventType: 'Montaż',
+    client: 'Krystyna Wójcik — Katowice',
+    installationId: 5,
+  },
+  {
+    id: 6,
+    name: 'Odbiór B2B 49.5 kWp + zgłoszenie Enea',
+    date: '2024-10-28',
+    eventType: 'Odbiór OSD',
+    client: 'Agro-Pol Sp. z o.o.',
+    installationId: 3,
+  },
+  {
+    id: 7,
+    name: 'Montaż falownika + magazyn 10 kWh Pruszków',
+    date: '2024-10-30',
+    eventType: 'Montaż',
+    client: 'Marek Kowalski (Dom 160m²)',
+    installationId: 1,
   },
 ];
 

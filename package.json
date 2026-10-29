@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "backend": "python -m backend.main",
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt"

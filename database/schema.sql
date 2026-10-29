@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS installations (
   contract_value TEXT NOT NULL,
   install_team TEXT NOT NULL,
   voivodeship TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS leads (
   assignee TEXT NOT NULL,
   lead_source TEXT DEFAULT 'Kalkulator WWW',
   estimated_power TEXT DEFAULT '9.8 kWp + 10 kWh',
+  notes TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -82,6 +84,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   date TEXT NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'Montaż',
+  client TEXT NOT NULL DEFAULT '',
+  installation_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -96,6 +101,13 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 7. System & Organization Settings table (Key-Value store)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Indexes for fast filtering by role, status, OSD operator, and voivodeship
 CREATE INDEX IF NOT EXISTS idx_installations_status ON installations(status);
 CREATE INDEX IF NOT EXISTS idx_installations_manager ON installations(manager);
@@ -103,3 +115,4 @@ CREATE INDEX IF NOT EXISTS idx_installations_osd ON installations(osd_operator);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 CREATE INDEX IF NOT EXISTS idx_leads_assignee ON leads(assignee);
 CREATE INDEX IF NOT EXISTS idx_clients_voivodeship ON clients(voivodeship);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_date ON calendar_events(date);
