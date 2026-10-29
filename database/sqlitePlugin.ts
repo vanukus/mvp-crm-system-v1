@@ -726,8 +726,8 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                   t.assignee,
                   'Audyt i projekt',
                   t.priority,
-                  '24 paź 2024',
-                  '25 lis 2024',
+                  '24 paź 2026',
+                  '25 lis 2026',
                   15,
                   'blue',
                   convertedName.slice(0, 2).toUpperCase(),
@@ -756,7 +756,7 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                 )
                 .run(
                   `Audyt przedmontażowy: ${t.project}`,
-                  '2024-10-26',
+                  '2026-10-26',
                   'Audyt',
                   t.project,
                   newInstId

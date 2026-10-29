@@ -125,11 +125,12 @@ export default function App() {
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [tab, setTab] = useState('Przegląd');
 
-  // Dropdown menus, toast alerts and calendar state
+  // Dropdown menus, toast alerts and calendar state initialized to current date
+  const now = new Date();
   const [menu, setMenu] = useState('');
   const [toast, setToast] = useState('');
   const [sort, setSort] = useState(false);
-  const [month, setMonth] = useState(9); // October 2024 (0-indexed)
+  const [month, setMonth] = useState(now.getMonth());
   const [week, setWeek] = useState(false);
 
   // Active logged-in user and their RBAC role ('admin' | 'manager' | 'salesman')
@@ -1013,8 +1014,8 @@ export default function App() {
                   subtitle="Udział linii produktowych wyliczony z bazy SQLite"
                   action={
                     <select aria-label="Okres raportowania">
-                      <option>Październik 2024</option>
-                      <option>Q4 2024</option>
+                      <option>Październik 2026</option>
+                      <option>Q4 2026</option>
                     </select>
                   }
                 >
@@ -2005,12 +2006,12 @@ export default function App() {
                 <div className="calendar-controls">
                   <Button onClick={() => setMonth(month - 1)}>‹</Button>
                   <h2>
-                    {new Date(2024, month)
+                    {new Date(now.getFullYear(), month)
                       .toLocaleString('pl-PL', { month: 'long', year: 'numeric' })
                       .replace(/^./, str => str.toUpperCase())}
                   </h2>
                   <Button onClick={() => setMonth(month + 1)}>›</Button>
-                  <Button onClick={() => setMonth(9)}>Dzisiaj</Button>
+                  <Button onClick={() => setMonth(now.getMonth())}>Dzisiaj</Button>
                 </div>
                 <div className="view-toggle">
                   <button className={!week ? 'active' : ''} onClick={() => setWeek(false)}>
@@ -2029,14 +2030,25 @@ export default function App() {
                 </div>
                 <div className="calendar-grid">
                   {Array.from({ length: week ? 7 : 35 }, (_, i) => {
-                    const day = week ? i + 21 : i;
-                    const normalizedMonth = ((month % 12) + 12) % 12;
+                    const weekStart = Math.max(1, Math.min(25, now.getDate() - 3));
+                    const day = week ? i + weekStart : i;
+                    const viewDate = new Date(now.getFullYear(), month, 1);
+                    const normalizedMonth = viewDate.getMonth();
+                    const normalizedYear = viewDate.getFullYear();
+                    const isToday =
+                      day === now.getDate() &&
+                      normalizedMonth === now.getMonth() &&
+                      normalizedYear === now.getFullYear();
                     const dayEvents = events.filter(ev => {
                       const d = new Date(ev.date + 'T12:00:00');
-                      return d.getDate() === day && d.getMonth() === normalizedMonth;
+                      return (
+                        d.getDate() === day &&
+                        d.getMonth() === normalizedMonth &&
+                        d.getFullYear() === normalizedYear
+                      );
                     });
                     return (
-                      <div className={`calendar-cell ${day === 24 && normalizedMonth === 9 ? 'today-cell' : ''}`} key={i}>
+                      <div className={`calendar-cell ${isToday ? 'today-cell' : ''}`} key={i}>
                         <span className={day < 1 || day > 31 ? 'muted' : ''}>
                           {day < 1 ? 30 : day > 31 ? day - 31 : day}
                         </span>
@@ -2373,7 +2385,7 @@ export default function App() {
                         month: 'short',
                         year: 'numeric',
                       })
-                    : existingProj?.deadline || '25 lis 2024';
+                    : existingProj?.deadline || '25 lis 2026';
                   const statusVal = String(form.get('status') || 'Audyt i projekt');
                   const p: Project = {
                     id: editing?.id || Date.now(),
@@ -2382,7 +2394,7 @@ export default function App() {
                     manager: String(form.get('manager')),
                     status: statusVal,
                     priority: String(form.get('priority')),
-                    start: existingProj ? existingProj.start : '24 paź 2024',
+                    start: existingProj ? existingProj.start : '24 paź 2026',
                     deadline: formattedDeadline,
                     progress:
                       statusVal === 'Odebrane'
@@ -2718,7 +2730,7 @@ export default function App() {
                     </label>
                     <label>
                       Data wyjazdu <span>*</span>
-                      <input required name="deadline" type="date" defaultValue="2024-10-29" />
+                      <input required name="deadline" type="date" defaultValue="2026-10-29" />
                     </label>
                   </div>
                 ) : (
@@ -2965,7 +2977,7 @@ export default function App() {
                           name="deadline"
                           type={modal === 'Zadanie' && editing ? 'text' : 'date'}
                           defaultValue={
-                            editing && 'due' in editing ? editing.due : '2024-11-15'
+                            editing && 'due' in editing ? editing.due : '2026-11-15'
                           }
                         />
                       </label>

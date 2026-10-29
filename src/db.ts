@@ -39,7 +39,7 @@ export type DatabaseSnapshot = {
   settings: SystemSettings;
 };
 
-const STORAGE_KEY = 'sm_oze_sqlite_cache_v3';
+const STORAGE_KEY = 'sm_oze_sqlite_cache_v4';
 
 // Parse kWp and kWh numbers from an estimated power string like "10.0 kWp + 15 kWh"
 function parsePowerAndBattery(estimatedPower?: string): { powerKwp: number; batteryKwh: number } {
@@ -250,8 +250,8 @@ export const DataLayer = {
           manager: task.assignee,
           status: 'Audyt i projekt',
           priority: task.priority,
-          start: '24 paź 2024',
-          deadline: '25 lis 2024',
+          start: '24 paź 2026',
+          deadline: '25 lis 2026',
           progress: 15,
           color: 'blue',
           initials: convertedName.slice(0, 2).toUpperCase(),
@@ -272,7 +272,7 @@ export const DataLayer = {
           {
             id: Date.now() + 1,
             name: `Audyt przedmontażowy: ${task.project}`,
-            date: '2024-10-26',
+            date: '2026-10-26',
             eventType: 'Audyt',
             client: task.project,
             installationId: newInstId,

@@ -72,7 +72,7 @@ class InstallationPayload(BaseModel):
     manager: str
     status: str
     priority: str
-    start: str = "24 paź 2024"
+    start: str = "24 paź 2026"
     deadline: str
     progress: int = 15
     color: str = "blue"
@@ -279,12 +279,12 @@ def seed_if_empty(conn: sqlite3.Connection, force_reset: bool = False) -> None:
     inst_count = conn.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
     if inst_count == 0:
         initial_installations = [
-            (1, "PV 9.8 kWp + Magazyn 10 kWh — Pruszków", "Marek Kowalski (Dom 160m²)", "Dawid Kowal", "Montaż w toku", "Wysoki", "01 paź 2024", "15 lis 2024", 72, "purple", "PV", "PV + Magazyn energii", 9.8, 10.0, "PGE", "Mój Prąd 6.0", "W przygotowaniu", "Dachówka ceramiczna", "58 400 PLN", "Ekipa Mazowsze-1", "Mazowieckie", "Falownik hybrydowy 10kW z modułem EPS (zasilanie awaryjne), dachówka ceramiczna kąt 35°."),
-            (2, "Dom Energooszczędny + Pompa + PV 12.4 kWp", "Rodzina Nowak — Wieliczka", "Sara Wiśniewska", "Kompletacja sprzętu", "Wysoki", "18 wrz 2024", "28 lis 2024", 45, "blue", "DE", "Dom pasywny + Pompa + PV", 12.4, 15.0, "Tauron", "Czyste Powietrze", "Złożony w NFOŚiGW", "Blachodachówka", "112 000 PLN", "Ekipa Małopolska-2", "Małopolskie", "Pompa ciepła powietrze-woda 9kW + bufor CWU 300L + instalacja PV na blachodachówce."),
-            (3, "Instalacja B2B 49.5 kWp + BESS 30 kWh", "Agro-Pol Sp. z o.o.", "Jakub Młynarski", "Zgłoszenie OSD / Dotacja", "Średni", "05 paź 2024", "30 paź 2024", 90, "orange", "B2", "Fotowoltaika B2B + BESS", 49.5, 30.0, "Enea", "Brak (B2B)", "Weryfikacja OSD", "Grunt", "214 500 PLN", "Ekipa Wielkopolska-1", "Wielkopolskie", "Konstrukcja gruntowa dwupodporowa, uzgodnienie ppoż. rzeczoznawcy zakończone."),
-            (4, "Magazyn energii 20 kWh + Falownik hybrydowy", "Piotr Zieliński — Gdańsk", "Aleksander Morawski", "Audyt i projekt", "Średni", "21 paź 2024", "10 gru 2024", 20, "teal", "ME", "Magazyn energii (Rozbudowa)", 0.0, 20.0, "Energa", "Mój Prąd 6.0", "W przygotowaniu", "Dach płaski", "42 000 PLN", "Ekipa Pomorze-1", "Pomorskie", "Rozbudowa istniejącej mikroinstalacji PV o magazyn LUNA2000 20 kWh."),
-            (5, "Termomodernizacja + PV 8.2 kWp + Magazyn", "Krystyna Wójcik — Katowice", "Emilia Dąbrowska", "Kompletacja sprzętu", "Niski", "02 paź 2024", "05 lis 2024", 38, "pink", "TM", "Dom energooszczędny + PV", 8.2, 10.0, "Tauron", "Czyste Powietrze", "Złożony w NFOŚiGW", "Blachodachówka", "86 900 PLN", "Ekipa Śląsk-3", "Śląskie", "Wniosek z prefinansowaniem WFOŚiGW Katowice — II próg dochodowy."),
-            (6, "PV 6.6 kWp + Magazyn energii 10 kWh", "Tomasz Mazur — Legionowo", "Emilia Dąbrowska", "Odebrane", "Wysoki", "10 sie 2024", "22 paź 2024", 100, "green", "TM", "PV + Magazyn energii", 6.6, 10.0, "PGE", "Mój Prąd 6.0", "Wypłacono", "Dachówka ceramiczna", "46 500 PLN", "Ekipa Mazowsze-1", "Mazowieckie", "Licznik dwukierunkowy PGE zamontowany, protokół PZO podpisany bez uwag."),
+            (1, "PV 9.8 kWp + Magazyn 10 kWh — Pruszków", "Marek Kowalski (Dom 160m²)", "Dawid Kowal", "Montaż w toku", "Wysoki", "01 paź 2026", "15 lis 2026", 72, "purple", "PV", "PV + Magazyn energii", 9.8, 10.0, "PGE", "Mój Prąd 6.0", "W przygotowaniu", "Dachówka ceramiczna", "58 400 PLN", "Ekipa Mazowsze-1", "Mazowieckie", "Falownik hybrydowy 10kW z modułem EPS (zasilanie awaryjne), dachówka ceramiczna kąt 35°."),
+            (2, "Dom Energooszczędny + Pompa + PV 12.4 kWp", "Rodzina Nowak — Wieliczka", "Sara Wiśniewska", "Kompletacja sprzętu", "Wysoki", "18 wrz 2026", "28 lis 2026", 45, "blue", "DE", "Dom pasywny + Pompa + PV", 12.4, 15.0, "Tauron", "Czyste Powietrze", "Złożony w NFOŚiGW", "Blachodachówka", "112 000 PLN", "Ekipa Małopolska-2", "Małopolskie", "Pompa ciepła powietrze-woda 9kW + bufor CWU 300L + instalacja PV na blachodachówce."),
+            (3, "Instalacja B2B 49.5 kWp + BESS 30 kWh", "Agro-Pol Sp. z o.o.", "Jakub Młynarski", "Zgłoszenie OSD / Dotacja", "Średni", "05 paź 2026", "30 paź 2026", 90, "orange", "B2", "Fotowoltaika B2B + BESS", 49.5, 30.0, "Enea", "Brak (B2B)", "Weryfikacja OSD", "Grunt", "214 500 PLN", "Ekipa Wielkopolska-1", "Wielkopolskie", "Konstrukcja gruntowa dwupodporowa, uzgodnienie ppoż. rzeczoznawcy zakończone."),
+            (4, "Magazyn energii 20 kWh + Falownik hybrydowy", "Piotr Zieliński — Gdańsk", "Aleksander Morawski", "Audyt i projekt", "Średni", "21 paź 2026", "10 gru 2026", 20, "teal", "ME", "Magazyn energii (Rozbudowa)", 0.0, 20.0, "Energa", "Mój Prąd 6.0", "W przygotowaniu", "Dach płaski", "42 000 PLN", "Ekipa Pomorze-1", "Pomorskie", "Rozbudowa istniejącej mikroinstalacji PV o magazyn LUNA2000 20 kWh."),
+            (5, "Termomodernizacja + PV 8.2 kWp + Magazyn", "Krystyna Wójcik — Katowice", "Emilia Dąbrowska", "Kompletacja sprzętu", "Niski", "02 paź 2026", "05 lis 2026", 38, "pink", "TM", "Dom energooszczędny + PV", 8.2, 10.0, "Tauron", "Czyste Powietrze", "Złożony w NFOŚiGW", "Blachodachówka", "86 900 PLN", "Ekipa Śląsk-3", "Śląskie", "Wniosek z prefinansowaniem WFOŚiGW Katowice — II próg dochodowy."),
+            (6, "PV 6.6 kWp + Magazyn energii 10 kWh", "Tomasz Mazur — Legionowo", "Emilia Dąbrowska", "Odebrane", "Wysoki", "10 sie 2026", "22 paź 2026", 100, "green", "TM", "PV + Magazyn energii", 6.6, 10.0, "PGE", "Mój Prąd 6.0", "Wypłacono", "Dachówka ceramiczna", "46 500 PLN", "Ekipa Mazowsze-1", "Mazowieckie", "Licznik dwukierunkowy PGE zamontowany, protokół PZO podpisany bez uwag."),
         ]
         conn.executemany(
             """
@@ -318,13 +318,13 @@ def seed_if_empty(conn: sqlite3.Connection, force_reset: bool = False) -> None:
     event_count = conn.execute("SELECT COUNT(*) FROM calendar_events").fetchone()[0]
     if event_count == 0:
         initial_events = [
-            (1, "08:00 Audyt dachu + pomiary PV", "2024-10-03", "Audyt", "Marek Kowalski (Dom 160m²)", 1),
-            (2, "Odbiór OSD + montaż licznika PGE", "2024-10-08", "Odbiór OSD", "Tomasz Mazur — Legionowo", 6),
-            (3, "Montaż konstrukcji PV + Pompa ciepła", "2024-10-15", "Montaż", "Rodzina Nowak — Wieliczka", 2),
-            (4, "Audyt rozbudowy magazynu 20 kWh", "2024-10-21", "Audyt", "Piotr Zieliński — Gdańsk", 4),
-            (5, "Kompletacja i wyjazd ekipy Śląsk-3", "2024-10-24", "Montaż", "Krystyna Wójcik — Katowice", 5),
-            (6, "Odbiór B2B 49.5 kWp + zgłoszenie Enea", "2024-10-28", "Odbiór OSD", "Agro-Pol Sp. z o.o.", 3),
-            (7, "Montaż falownika + magazyn 10 kWh Pruszków", "2024-10-30", "Montaż", "Marek Kowalski (Dom 160m²)", 1),
+            (1, "08:00 Audyt dachu + pomiary PV", "2026-10-03", "Audyt", "Marek Kowalski (Dom 160m²)", 1),
+            (2, "Odbiór OSD + montaż licznika PGE", "2026-10-08", "Odbiór OSD", "Tomasz Mazur — Legionowo", 6),
+            (3, "Montaż konstrukcji PV + Pompa ciepła", "2026-10-15", "Montaż", "Rodzina Nowak — Wieliczka", 2),
+            (4, "Audyt rozbudowy magazynu 20 kWh", "2026-10-21", "Audyt", "Piotr Zieliński — Gdańsk", 4),
+            (5, "Kompletacja i wyjazd ekipy Śląsk-3", "2026-10-24", "Montaż", "Krystyna Wójcik — Katowice", 5),
+            (6, "Odbiór B2B 49.5 kWp + zgłoszenie Enea", "2026-10-28", "Odbiór OSD", "Agro-Pol Sp. z o.o.", 3),
+            (7, "Montaż falownika + magazyn 10 kWh Pruszków", "2026-10-30", "Montaż", "Marek Kowalski (Dom 160m²)", 1),
         ]
         conn.executemany(
             """
@@ -776,8 +776,8 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                         t.assignee,
                         "Audyt i projekt",
                         t.priority,
-                        "24 paź 2024",
-                        "25 lis 2024",
+                        "24 paź 2026",
+                        "25 lis 2026",
                         15,
                         "blue",
                         converted_name[:2].upper(),
@@ -806,7 +806,7 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                     """,
                     (
                         f"Audyt przedmontażowy: {t.project}",
-                        "2024-10-26",
+                        "2026-10-26",
                         "Audyt",
                         t.project,
                         new_inst_id,
