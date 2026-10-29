@@ -215,12 +215,12 @@ System projektowy został zbudowany w oparciu o oficjalną paletę barw witryny 
 
 ## 6. Uruchomienie projektu
 
-1. **Uruchomienie frontendu wraz z wbudowanym serwerem SQLite (Vite):**
+1. **Uruchomienie serwera deweloperskiego (wraz z wbudowaną bazą SQLite `database/oze_crm.sqlite`):**
    ```bash
-   pnpm dev
+   npm run dev
    ```
 2. **Uruchomienie backendu Python FastAPI (opcjonalnie, dla pełnego serwera uvicorn oraz dokumentacji Swagger UI):**
    ```bash
-   pnpm backend
+   npm run backend
    ```
    Po uruchomieniu FastAPI interaktywna dokumentacja OpenAPI / Swagger jest dostępna pod adresem: `http://127.0.0.1:8000/docs`.
