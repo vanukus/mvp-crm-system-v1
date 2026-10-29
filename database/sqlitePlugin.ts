@@ -230,6 +230,17 @@ export function seedIfEmpty(db: DatabaseSync, forceReset = false) {
   syncClientProjectCounts(db);
 }
 
+// Format a JS Date as Polish short date, e.g. "29 paź 2026"
+function formatPlShortDate(d: Date): string {
+  return d
+    .toLocaleDateString('pl-PL', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+    .replace('.', '');
+}
+
 // Parse kWp and kWh numbers from an estimated power string like "10.0 kWp + 15 kWh"
 function parsePowerAndBattery(estimatedPower?: string): { powerKwp: number; batteryKwh: number } {
   if (!estimatedPower) return { powerKwp: 9.8, batteryKwh: 10 };
@@ -710,6 +721,12 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
               const voiv = clientRow?.voivodeship ? String(clientRow.voivodeship) : 'Mazowieckie';
               const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
               const newInstId = Date.now();
+              const today = new Date();
+              const deadlineDate = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+              const auditDate = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+              const startStr = formatPlShortDate(today);
+              const deadlineStr = formatPlShortDate(deadlineDate);
+              const auditIso = auditDate.toISOString().slice(0, 10);
 
               database
                 .prepare(
@@ -726,8 +743,8 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                   t.assignee,
                   'Audyt i projekt',
                   t.priority,
-                  '24 paź 2026',
-                  '25 lis 2026',
+                  startStr,
+                  deadlineStr,
                   15,
                   'blue',
                   convertedName.slice(0, 2).toUpperCase(),
@@ -756,7 +773,7 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                 )
                 .run(
                   `Audyt przedmontażowy: ${t.project}`,
-                  '2026-10-26',
+                  auditIso,
                   'Audyt',
                   t.project,
                   newInstId
@@ -866,11 +883,22 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
         }
       }
 
-      // 6. POST & DELETE /api/db/users — Update RBAC role or create/edit employee in SQLite
+      // 6. POST & DELETE /api/db/users — Update RBAC role or create/edit/delete employee in SQLite
       if (url === '/api/db/users') {
         if (req.method === 'DELETE') {
           const id = Number(params.get('id'));
+          const actor = params.get('actor') || 'Aleksander Morawski';
+          const existing = database
+            .prepare('SELECT name FROM users WHERE id = ?')
+            .get(id) as { name?: string } | undefined;
           database.prepare('DELETE FROM users WHERE id = ?').run(id);
+          if (existing?.name) {
+            database
+              .prepare(
+                'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+              )
+              .run(actor, 'usunął pracownika z bazy RBAC', existing.name, 'Przed chwilą', 'orange');
+          }
           res.end(JSON.stringify(getBootstrapSnapshot(database)));
           return;
         }
@@ -951,40 +979,89 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
         }
       }
 
-      // 7. POST & DELETE /api/db/events — Create or delete calendar schedule items
+      // 7. POST & DELETE /api/db/events — Create, update, or delete calendar schedule items
       if (url === '/api/db/events') {
         if (req.method === 'DELETE') {
           const id = Number(params.get('id'));
+          const actor = params.get('actor') || 'Aleksander Morawski';
+          const existing = database
+            .prepare('SELECT name FROM calendar_events WHERE id = ?')
+            .get(id) as { name?: string } | undefined;
           database.prepare('DELETE FROM calendar_events WHERE id = ?').run(id);
+          if (existing?.name) {
+            database
+              .prepare(
+                'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+              )
+              .run(actor, 'usunął termin z grafiku montaży', existing.name, 'Przed chwilą', 'orange');
+          }
           res.end(JSON.stringify(getBootstrapSnapshot(database)));
           return;
         }
 
         if (req.method === 'POST') {
           const ev = (bodyObj || (await readJsonBody(req))) as CalendarEvent & { actor?: string };
-          database
-            .prepare(
-              'INSERT INTO calendar_events (name, date, event_type, client, installation_id) VALUES (?, ?, ?, ?, ?)'
-            )
-            .run(
-              ev.name,
-              ev.date,
-              ev.eventType || 'Montaż',
-              ev.client || '',
-              ev.installationId || null
+          if (ev.id) {
+            const exists = Boolean(
+              database.prepare('SELECT id FROM calendar_events WHERE id = ?').get(ev.id)
             );
+            database
+              .prepare(
+                `INSERT INTO calendar_events (id, name, date, event_type, client, installation_id)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   date = excluded.date,
+                   event_type = excluded.event_type,
+                   client = excluded.client,
+                   installation_id = excluded.installation_id`
+              )
+              .run(
+                ev.id,
+                ev.name,
+                ev.date,
+                ev.eventType || 'Montaż',
+                ev.client || '',
+                ev.installationId || null
+              );
+            database
+              .prepare(
+                'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+              )
+              .run(
+                ev.actor || 'Aleksander Morawski',
+                exists
+                  ? `zaktualizował termin w grafiku (${ev.date})`
+                  : `zaplanował w grafiku (${ev.date})`,
+                ev.name,
+                'Przed chwilą',
+                'teal'
+              );
+          } else {
+            database
+              .prepare(
+                'INSERT INTO calendar_events (name, date, event_type, client, installation_id) VALUES (?, ?, ?, ?, ?)'
+              )
+              .run(
+                ev.name,
+                ev.date,
+                ev.eventType || 'Montaż',
+                ev.client || '',
+                ev.installationId || null
+              );
 
-          database
-            .prepare(
-              'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
-            )
-            .run(
-              ev.actor || 'Aleksander Morawski',
-              `zaplanował w grafiku (${ev.date})`,
-              ev.name,
-              'Przed chwilą',
-              'teal'
-            );
+            database
+              .prepare(
+                'INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)'
+              )
+              .run(
+                ev.actor || 'Aleksander Morawski',
+                `zaplanował w grafiku (${ev.date})`,
+                ev.name,
+                'Przed chwilą',
+                'teal'
+              );
+          }
 
           res.end(JSON.stringify(getBootstrapSnapshot(database)));
           return;

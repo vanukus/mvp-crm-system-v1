@@ -41,6 +41,17 @@ export type DatabaseSnapshot = {
 
 const STORAGE_KEY = 'sm_oze_sqlite_cache_v4';
 
+// Format a JS Date as Polish short date, e.g. "29 paź 2026"
+function formatPlShortDate(d: Date): string {
+  return d
+    .toLocaleDateString('pl-PL', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+    .replace('.', '');
+}
+
 // Parse kWp and kWh numbers from an estimated power string like "10.0 kWp + 15 kWh"
 function parsePowerAndBattery(estimatedPower?: string): { powerKwp: number; batteryKwh: number } {
   if (!estimatedPower) return { powerKwp: 9.8, batteryKwh: 10 };
@@ -243,6 +254,9 @@ export const DataLayer = {
         const clientMatch = current.clients.find(c => c.name === task.project);
         const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
         const newInstId = Date.now();
+        const today = new Date();
+        const deadlineDate = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const auditDate = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
         const newInstallation: Project = {
           id: newInstId,
           name: convertedName,
@@ -250,8 +264,8 @@ export const DataLayer = {
           manager: task.assignee,
           status: 'Audyt i projekt',
           priority: task.priority,
-          start: '24 paź 2026',
-          deadline: '25 lis 2026',
+          start: formatPlShortDate(today),
+          deadline: formatPlShortDate(deadlineDate),
           progress: 15,
           color: 'blue',
           initials: convertedName.slice(0, 2).toUpperCase(),
@@ -272,7 +286,7 @@ export const DataLayer = {
           {
             id: Date.now() + 1,
             name: `Audyt przedmontażowy: ${task.project}`,
-            date: '2026-10-26',
+            date: auditDate.toISOString().slice(0, 10),
             eventType: 'Audyt',
             client: task.project,
             installationId: newInstId,
@@ -426,7 +440,28 @@ export const DataLayer = {
     return updated;
   },
 
-  // Insert a calendar schedule event in SQLite
+  // Delete a user / employee from SQLite
+  async deleteUser(id: number, actor?: string): Promise<DatabaseSnapshot> {
+    try {
+      const q = new URLSearchParams({ id: String(id), actor: actor || '' });
+      const res = await fetch(`/api/db/users?${q.toString()}`, { method: 'DELETE' });
+      if (res.ok) {
+        const snapshot = (await res.json()) as DatabaseSnapshot;
+        saveLocalCache(snapshot);
+        return snapshot;
+      }
+    } catch {
+      // Fallback
+    }
+
+    const current = getLocalFallbackSnapshot();
+    const users = current.users.filter(u => u.id !== id);
+    const updated = { ...current, users };
+    saveLocalCache(updated);
+    return updated;
+  },
+
+  // Insert or update a calendar schedule event in SQLite
   async saveEvent(event: CalendarEvent, actor?: string): Promise<DatabaseSnapshot> {
     try {
       const res = await fetch('/api/db/events', {
@@ -444,18 +479,23 @@ export const DataLayer = {
     }
 
     const current = getLocalFallbackSnapshot();
+    const exists = event.id !== undefined && current.events.some(ev => ev.id === event.id);
+    const events = exists
+      ? current.events.map(ev => (ev.id === event.id ? event : ev))
+      : [{ ...event, id: event.id || Date.now() }, ...current.events];
     const updated = {
       ...current,
-      events: [{ ...event, id: Date.now() }, ...current.events],
+      events,
     };
     saveLocalCache(updated);
     return updated;
   },
 
   // Delete a calendar schedule event from SQLite
-  async deleteEvent(id: number): Promise<DatabaseSnapshot> {
+  async deleteEvent(id: number, actor?: string): Promise<DatabaseSnapshot> {
     try {
-      const res = await fetch(`/api/db/events?id=${id}`, { method: 'DELETE' });
+      const q = new URLSearchParams({ id: String(id), actor: actor || '' });
+      const res = await fetch(`/api/db/events?${q.toString()}`, { method: 'DELETE' });
       if (res.ok) {
         const snapshot = (await res.json()) as DatabaseSnapshot;
         saveLocalCache(snapshot);

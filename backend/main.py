@@ -14,6 +14,7 @@ import re
 import site
 import sqlite3
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -137,6 +138,7 @@ class UserPayload(BaseModel):
 
 
 class EventPayload(BaseModel):
+    id: Optional[int] = None
     name: str
     date: str
     eventType: Optional[str] = "Montaż"
@@ -360,6 +362,17 @@ def seed_if_empty(conn: sqlite3.Connection, force_reset: bool = False) -> None:
 
     sync_client_project_counts(conn)
     conn.commit()
+
+
+POLISH_MONTHS_SHORT = [
+    "sty", "lut", "mar", "kwi", "maj", "cze",
+    "lip", "sie", "wrz", "paź", "lis", "gru",
+]
+
+
+def format_pl_date(d: date) -> str:
+    """Format a Python date as Polish short date, e.g. '29 paź 2026'."""
+    return f"{d.day:02d} {POLISH_MONTHS_SHORT[d.month - 1]} {d.year}"
 
 
 def parse_power_and_battery(estimated_power: Optional[str]) -> tuple[float, float]:
@@ -760,6 +773,10 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                 est_price = int(round((power_kwp * 3800 + battery_kwh * 2100) / 100.0) * 100)
                 formatted_price = f"{est_price:,}".replace(",", " ") + " PLN"
                 new_inst_id = int(t.id) + 1000
+                today_date = date.today()
+                start_str = format_pl_date(today_date)
+                deadline_str = format_pl_date(today_date + timedelta(days=30))
+                audit_iso = (today_date + timedelta(days=2)).isoformat()
 
                 conn.execute(
                     """
@@ -776,8 +793,8 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                         t.assignee,
                         "Audyt i projekt",
                         t.priority,
-                        "24 paź 2026",
-                        "25 lis 2026",
+                        start_str,
+                        deadline_str,
                         15,
                         "blue",
                         converted_name[:2].upper(),
@@ -806,7 +823,7 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                     """,
                     (
                         f"Audyt przedmontażowy: {t.project}",
-                        "2026-10-26",
+                        audit_iso,
                         "Audyt",
                         t.project,
                         new_inst_id,
@@ -998,30 +1015,72 @@ def api_save_user(u: UserPayload) -> dict[str, Any]:
 
 
 @app.delete("/api/db/users")
-def api_delete_user(id: int = Query(...)) -> dict[str, Any]:
+def api_delete_user(
+    id: int = Query(...),
+    actor: str = Query("Aleksander Morawski"),
+) -> dict[str, Any]:
     """Delete a user record from SQLite."""
     with get_connection() as conn:
+        row = conn.execute("SELECT name FROM users WHERE id = ?", (id,)).fetchone()
         conn.execute("DELETE FROM users WHERE id = ?", (id,))
+        if row:
+            conn.execute(
+                "INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)",
+                (actor, "usunął pracownika z bazy RBAC", row["name"], "Przed chwilą", "orange"),
+            )
         conn.commit()
         return build_bootstrap_snapshot(conn)
 
 
 @app.post("/api/db/events")
 def api_save_event(ev: EventPayload) -> dict[str, Any]:
-    """Create a calendar schedule event in SQLite."""
+    """Create or update a calendar schedule event in SQLite."""
     with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO calendar_events (name, date, event_type, client, installation_id)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (ev.name, ev.date, ev.eventType or "Montaż", ev.client or "", ev.installationId),
-        )
+        if ev.id is not None:
+            exists = (
+                conn.execute("SELECT id FROM calendar_events WHERE id = ?", (ev.id,)).fetchone()
+                is not None
+            )
+            conn.execute(
+                """
+                INSERT INTO calendar_events (id, name, date, event_type, client, installation_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    date = excluded.date,
+                    event_type = excluded.event_type,
+                    client = excluded.client,
+                    installation_id = excluded.installation_id
+                """,
+                (
+                    ev.id,
+                    ev.name,
+                    ev.date,
+                    ev.eventType or "Montaż",
+                    ev.client or "",
+                    ev.installationId,
+                ),
+            )
+            action_label = (
+                f"zaktualizował termin w grafiku ({ev.date})"
+                if exists
+                else f"zaplanował w grafiku ({ev.date})"
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO calendar_events (name, date, event_type, client, installation_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ev.name, ev.date, ev.eventType or "Montaż", ev.client or "", ev.installationId),
+            )
+            action_label = f"zaplanował w grafiku ({ev.date})"
+
         conn.execute(
             "INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)",
             (
                 ev.actor or "Aleksander Morawski",
-                f"zaplanował w grafiku ({ev.date})",
+                action_label,
                 ev.name,
                 "Przed chwilą",
                 "teal",
@@ -1032,10 +1091,19 @@ def api_save_event(ev: EventPayload) -> dict[str, Any]:
 
 
 @app.delete("/api/db/events")
-def api_delete_event(id: int = Query(...)) -> dict[str, Any]:
+def api_delete_event(
+    id: int = Query(...),
+    actor: str = Query("Aleksander Morawski"),
+) -> dict[str, Any]:
     """Delete a calendar schedule event from SQLite."""
     with get_connection() as conn:
+        row = conn.execute("SELECT name FROM calendar_events WHERE id = ?", (id,)).fetchone()
         conn.execute("DELETE FROM calendar_events WHERE id = ?", (id,))
+        if row:
+            conn.execute(
+                "INSERT INTO activity_logs (user_name, action, target, time_label, color) VALUES (?, ?, ?, ?, ?)",
+                (actor, "usunął termin z grafiku montaży", row["name"], "Przed chwilą", "orange"),
+            )
         conn.commit()
         return build_bootstrap_snapshot(conn)
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   initialProjects,
   initialTasks,
@@ -89,7 +89,18 @@ const roleLabels: Record<SystemRole, string> = {
   salesman: 'Salesman (Handlowiec)',
 };
 
-type EditableRecord = Project | Task | ClientRecord | Employee | null;
+type EditableRecord = Project | Task | ClientRecord | Employee | CalendarEvent | null;
+
+// Format a JS Date as Polish short date, e.g. "29 paź 2026"
+function formatPlShortDate(d: Date): string {
+  return d
+    .toLocaleDateString('pl-PL', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+    .replace('.', '');
+}
 
 export default function App() {
   // Active navigation and core SQLite-backed database state
@@ -132,6 +143,8 @@ export default function App() {
   const [sort, setSort] = useState(false);
   const [month, setMonth] = useState(now.getMonth());
   const [week, setWeek] = useState(false);
+  const [reportPeriod, setReportPeriod] = useState('Wszystkie (SQLite)');
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Active logged-in user and their RBAC role ('admin' | 'manager' | 'salesman')
   const currentUser = users.find(u => u.id === currentUserId) || users[0];
@@ -152,9 +165,21 @@ export default function App() {
     setDbEngine(`${snap.meta.engine} · ${snap.meta.file}`);
   };
 
-  // Bootstrap all tables from SQLite on initial mount
+  // Bootstrap all tables from SQLite on initial mount and bind global keyboard shortcuts (⌘K / Ctrl+K & Escape)
   useEffect(() => {
     DataLayer.bootstrap().then(applySnapshot);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if (e.key === 'Escape') {
+        setModal(null);
+        setMenu('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   // Display temporary toast message
@@ -245,22 +270,34 @@ export default function App() {
   const totalPowerKwp = roleScopedProjects.reduce((sum, p) => sum + p.powerKwp, 0).toFixed(1);
   const totalBatteryKwh = roleScopedProjects.reduce((sum, p) => sum + p.batteryKwh, 0);
 
-  // Dynamic technology breakdown calculated from roleScopedProjects
-  const totalScopedCount = Math.max(1, roleScopedProjects.length);
+  // Dynamic technology breakdown calculated from roleScopedProjects and active reportPeriod filter
+  const periodScopedProjects = roleScopedProjects.filter(p => {
+    if (reportPeriod === 'Październik 2026') {
+      return `${p.start} ${p.deadline}`.toLowerCase().includes('paź');
+    }
+    if (reportPeriod === 'Q4 2026') {
+      const combined = `${p.start} ${p.deadline}`.toLowerCase();
+      return (
+        combined.includes('paź') || combined.includes('lis') || combined.includes('gru')
+      );
+    }
+    return true;
+  });
+  const totalScopedCount = Math.max(1, periodScopedProjects.length);
   const pvStorageShare = Math.round(
-    (roleScopedProjects.filter(p => p.systemType === 'PV + Magazyn energii').length /
+    (periodScopedProjects.filter(p => p.systemType === 'PV + Magazyn energii').length /
       totalScopedCount) *
       100
   );
   const heatPumpShare = Math.round(
-    (roleScopedProjects.filter(
+    (periodScopedProjects.filter(
       p => p.systemType.includes('Dom') || p.systemType.includes('Pompa')
     ).length /
       totalScopedCount) *
       100
   );
   const b2bShare = Math.round(
-    (roleScopedProjects.filter(p => p.systemType.includes('B2B')).length / totalScopedCount) * 100
+    (periodScopedProjects.filter(p => p.systemType.includes('B2B')).length / totalScopedCount) * 100
   );
   const expansionShare = Math.max(0, 100 - pvStorageShare - heatPumpShare - b2bShare);
 
@@ -370,6 +407,22 @@ export default function App() {
       applySnapshot(snap);
       if (clientDetail?.id === editing.id) setClientDetail(null);
       notify(`Usunięto klienta z bazy SQLite: ${editing.name}`);
+    } else if (modal === 'Pracownik' && 'systemRole' in editing) {
+      if (users.length <= 1) {
+        notify('Nie można usunąć ostatniego administratora z systemu.');
+        return;
+      }
+      const snap = await DataLayer.deleteUser(editing.id, currentUser.name);
+      applySnapshot(snap);
+      if (employee?.id === editing.id) setEmployee(null);
+      if (currentUserId === editing.id && snap.users?.length) {
+        setCurrentUserId(snap.users[0].id);
+      }
+      notify(`Usunięto pracownika z bazy RBAC (SQLite): ${editing.name}`);
+    } else if (modal === 'Wydarzenie' && 'date' in editing && editing.id) {
+      const snap = await DataLayer.deleteEvent(editing.id, currentUser.name);
+      applySnapshot(snap);
+      notify(`Usunięto termin z grafiku (SQLite): ${editing.name}`);
     }
     setModal(null);
     setEditing(null);
@@ -728,9 +781,11 @@ export default function App() {
 
           <button
             className="nav-item"
-            onClick={() =>
-              notify(`Biuro dotacji i OSD (${settings.companyName}): ${settings.officeEmail}`)
-            }
+            onClick={() => {
+              setEditing(null);
+              setModal('BazaWiedzy');
+              setMenu('');
+            }}
           >
             <Icon name="help" />
             <span>Baza wiedzy OSD i NFOŚiGW</span>
@@ -782,9 +837,10 @@ export default function App() {
               ))}
             </div>
 
-            <div className="global-search">
+            <div className="global-search" onClick={() => searchInputRef.current?.focus()}>
               <Icon name="search" size={16} />
               <input
+                ref={searchInputRef}
                 aria-label="Wyszukiwanie globalne"
                 placeholder="Szukaj klienta, instalacji, kWp, OSD..."
                 value={search}
@@ -793,7 +849,7 @@ export default function App() {
                   if (page === 'Przegląd') setPage('Realizacje OZE');
                 }}
               />
-              <kbd>⌘ K</kbd>
+              <kbd title="Skrót klawiszowy Ctrl+K / ⌘K">⌘ K</kbd>
             </div>
 
             <div className="menu-anchor">
@@ -951,16 +1007,16 @@ export default function App() {
                     currentRole === 'salesman' ? 'Twoja sprzedana moc PV' : 'Moc PV w realizacji',
                     `${totalPowerKwp} kWp`,
                     'sun',
-                    '+18.4 kWp',
-                    'w tym miesiącu',
+                    `${roleScopedProjects.filter(p => p.powerKwp > 0).length} inst.`,
+                    'z modułami fotowoltaicznymi',
                     'blue',
                   ],
                   [
                     currentRole === 'salesman' ? 'Twoje magazyny energii' : 'Magazyny energii (BESS)',
                     `${totalBatteryKwh} kWh`,
                     'folder',
-                    '+35 kWh',
-                    'w tym miesiącu',
+                    `${roleScopedProjects.filter(p => p.batteryKwh > 0).length} szt.`,
+                    'z magazynem energii LiFePO4',
                     'purple',
                   ],
                   [
@@ -969,8 +1025,8 @@ export default function App() {
                       ? `${roleScopedTasks.length} szans`
                       : `${roleScopedProjects.filter(p => p.subsidyStatus !== 'Wypłacono').length} w toku`,
                     'clock',
-                    '94%',
-                    'skuteczności konwersji',
+                    `${roleScopedProjects.filter(p => p.status === 'Odebrane').length}/${Math.max(1, roleScopedProjects.length)}`,
+                    'odebranych technicznie obiektów',
                     'orange',
                   ],
                   [
@@ -1011,18 +1067,32 @@ export default function App() {
               <div className="overview-middle">
                 <Section
                   title="Struktura technologii OZE"
-                  subtitle="Udział linii produktowych wyliczony z bazy SQLite"
+                  subtitle={`Udział linii produktowych wyliczony z bazy SQLite (${reportPeriod})`}
                   action={
-                    <select aria-label="Okres raportowania">
-                      <option>Październik 2026</option>
-                      <option>Q4 2026</option>
+                    <select
+                      aria-label="Okres raportowania"
+                      value={reportPeriod}
+                      onChange={e => setReportPeriod(e.target.value)}
+                    >
+                      <option value="Wszystkie (SQLite)">Wszystkie (SQLite)</option>
+                      <option value="Październik 2026">Październik 2026</option>
+                      <option value="Q4 2026">Q4 2026</option>
                     </select>
                   }
                 >
                   <div className="project-overview">
-                    <div className="donut">
+                    <div
+                      className="donut"
+                      style={{
+                        background: `conic-gradient(#137684 0 ${pvStorageShare}%, #1B5E6D ${pvStorageShare}% ${
+                          pvStorageShare + heatPumpShare
+                        }%, #FBBF3A ${pvStorageShare + heatPumpShare}% ${
+                          pvStorageShare + heatPumpShare + b2bShare
+                        }%, #252629 ${pvStorageShare + heatPumpShare + b2bShare}% 100%)`,
+                      }}
+                    >
                       <div>
-                        <strong>{roleScopedProjects.length}</strong>
+                        <strong>{periodScopedProjects.length}</strong>
                         <span>Obiektów OZE</span>
                       </div>
                     </div>
@@ -1304,17 +1374,131 @@ export default function App() {
                   {taskList(tasks.filter(t => t.project === detail.name || t.project === detail.client))}
                 </Section>
               ) : tab === 'Ekipa i Sprzęt' ? (
-                <div className="employee-grid">
-                  {users.slice(0, 3).map(e => (
-                    <div className="panel employee-card" key={e.name}>
-                      <Avatar name={e.name} color={e.color} />
-                      <h3>{e.name}</h3>
-                      <p>
-                        {e.role} · Brygada: <strong>{detail.installTeam}</strong>
-                      </p>
-                      <Badge>{e.systemRole.toUpperCase()}</Badge>
+                <div className="detail-grid">
+                  <Section
+                    title="Specyfikacja sprzętowa (BOM / Kompletacja komponentów OZE)"
+                    subtitle={`Zestawienie materiałowe wyliczone dla obiektu: ${detail.powerKwp} kWp PV + ${detail.batteryKwh} kWh BESS`}
+                    action={
+                      currentRole !== 'salesman' ? (
+                        <Button
+                          onClick={() =>
+                            changeProjectStatus(
+                              detail.id,
+                              detail.progress < 45 ? 'Kompletacja sprzętu' : 'Montaż w toku'
+                            )
+                          }
+                        >
+                          {detail.progress < 45
+                            ? 'Zatwierdź kompletację sprzętu'
+                            : 'Przekaż do montażu'}
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    <div className="prose">
+                      {[
+                        ...(detail.powerKwp > 0
+                          ? [
+                              [
+                                `Moduły PV N-Type Bifacial 450 Wp (${Math.ceil(
+                                  (detail.powerKwp * 1000) / 450
+                                )} szt.)`,
+                                `Łączna moc generatora: ${detail.powerKwp} kWp · Konstrukcja montażowa: ${detail.roofType}`,
+                                detail.progress >= 45 ? 'Wydano z magazynu' : 'Rezerwacja magazynowa',
+                              ],
+                            ]
+                          : []),
+                        [
+                          `Falownik hybrydowy 3-fazowy ${Math.max(
+                            6,
+                            Math.ceil(detail.powerKwp || 10)
+                          )} kW + moduł EPS (Backup)`,
+                          `Pełna współpraca z siecią ${detail.osdOperator} Dystrybucja oraz pracą wyspową`,
+                          detail.progress >= 45 ? 'Wydano z magazynu' : 'Rezerwacja magazynowa',
+                        ],
+                        ...(detail.batteryKwh > 0
+                          ? [
+                              [
+                                `Magazyn energii LiFePO4 ${detail.batteryKwh} kWh (${Math.ceil(
+                                  detail.batteryKwh / 5
+                                )} × moduł 5 kWh + BMS)`,
+                                `Kwalifikacja do programu dotacyjnego: ${detail.subsidyProgram}`,
+                                detail.progress >= 45 ? 'Wydano z magazynu' : 'W kompletacji',
+                              ],
+                            ]
+                          : []),
+                        ...(detail.systemType.includes('Pompa') || detail.systemType.includes('Dom')
+                          ? [
+                              [
+                                'Pompa ciepła powietrze-woda 9 kW (R290) + bufor CWU 300L',
+                                'Zestaw hydrauliczny z grupą pompową i sterownikiem pogodowym',
+                                detail.progress >= 45 ? 'Wydano z magazynu' : 'W kompletacji',
+                              ],
+                            ]
+                          : []),
+                        [
+                          `Rozdzielnica zabezpieczeń AC/DC (T1+T2) + okablowanie solarne 6 mm²`,
+                          `Zabezpieczenia po stronie AC/DC zgodne z wymogami operatora ${detail.osdOperator}`,
+                          detail.progress >= 70 ? 'Zamontowano' : 'Gotowe do wysyłki',
+                        ],
+                      ].map(([itemTitle, itemDesc, itemBadge]) => (
+                        <div className="milestone" key={itemTitle}>
+                          <span className={detail.progress >= 45 ? 'done-dot' : 'pending-dot'} />
+                          <div>
+                            <strong>{itemTitle}</strong>
+                            <p>{itemDesc}</p>
+                          </div>
+                          <Badge>{itemBadge}</Badge>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  </Section>
+
+                  <Section
+                    title="Przypisana ekipa wykonawcza i odpowiedzialni (RBAC)"
+                    subtitle={`Brygada monterska: ${detail.installTeam} · Województwo: ${detail.voivodeship}`}
+                    action={
+                      <Button
+                        onClick={() =>
+                          open('Wydarzenie', {
+                            name: `Montaż: ${detail.name}`,
+                            date: new Date().toISOString().slice(0, 10),
+                            eventType: 'Montaż',
+                            client: detail.client,
+                            installationId: detail.id,
+                          })
+                        }
+                      >
+                        <Icon name="calendar" size={14} />
+                        Zaplanuj wyjazd ekipy
+                      </Button>
+                    }
+                  >
+                    <div className="prose">
+                      {[
+                        users.find(u => u.name === detail.manager) || currentUser,
+                        users.find(u => u.department === 'Ekipy Monterskie') || users[2] || currentUser,
+                        users.find(u => u.department === 'Dotacje i OSD') || users[5] || currentUser,
+                      ]
+                        .filter((u, idx, arr) => u && arr.findIndex(x => x.id === u.id) === idx)
+                        .map(member => (
+                          <div className="milestone" key={member.id}>
+                            <Avatar name={member.name} color={member.color} />
+                            <div>
+                              <strong>
+                                {member.name}{' '}
+                                {member.name === detail.manager ? '(Koordynator prowadzący)' : ''}
+                              </strong>
+                              <p>
+                                {member.role} · Brygada: <strong>{detail.installTeam}</strong> ·{' '}
+                                {member.email}
+                              </p>
+                            </div>
+                            <Badge>{member.systemRole.toUpperCase()}</Badge>
+                          </div>
+                        ))}
+                    </div>
+                  </Section>
                 </div>
               ) : tab === 'Dotacje i OSD' ? (
                 <Section
@@ -1867,6 +2051,20 @@ export default function App() {
               />
               {employee ? (
                 <>
+                  <div className="quick-actions">
+                    {currentRole === 'admin' && (
+                      <Button onClick={() => open('Pracownik', employee)}>
+                        Edytuj profil pracownika (SQL)
+                      </Button>
+                    )}
+                    <Button onClick={() => open('Zadanie')}>
+                      <Icon name="plus" size={14} />
+                      Przypisz nowe zadanie / audyt
+                    </Button>
+                    <Button onClick={() => switchUser(employee)}>
+                      Zaloguj jako {employee.name.split(' ')[0]}
+                    </Button>
+                  </div>
                   <div className="detail-stats">
                     <div>
                       <small>Imię i nazwisko</small>
@@ -2029,59 +2227,87 @@ export default function App() {
                   ))}
                 </div>
                 <div className="calendar-grid">
-                  {Array.from({ length: week ? 7 : 35 }, (_, i) => {
-                    const weekStart = Math.max(1, Math.min(25, now.getDate() - 3));
-                    const day = week ? i + weekStart : i;
+                  {(() => {
                     const viewDate = new Date(now.getFullYear(), month, 1);
-                    const normalizedMonth = viewDate.getMonth();
-                    const normalizedYear = viewDate.getFullYear();
-                    const isToday =
-                      day === now.getDate() &&
-                      normalizedMonth === now.getMonth() &&
-                      normalizedYear === now.getFullYear();
-                    const dayEvents = events.filter(ev => {
-                      const d = new Date(ev.date + 'T12:00:00');
+                    const viewYear = viewDate.getFullYear();
+                    const viewMonth = viewDate.getMonth();
+                    const firstDayWeekday = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7;
+                    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+                    const totalCells = week
+                      ? 7
+                      : Math.ceil((firstDayWeekday + daysInMonth) / 7) * 7;
+                    const refDay = Math.min(now.getDate(), daysInMonth);
+                    const refWeekday = (new Date(viewYear, viewMonth, refDay).getDay() + 6) % 7;
+                    const weekMondayDay = refDay - refWeekday;
+
+                    return Array.from({ length: totalCells }, (_, i) => {
+                      const cellDate = week
+                        ? new Date(viewYear, viewMonth, weekMondayDay + i)
+                        : new Date(viewYear, viewMonth, 1 - firstDayWeekday + i);
+                      const cellDay = cellDate.getDate();
+                      const cellMonth = cellDate.getMonth();
+                      const cellYear = cellDate.getFullYear();
+                      const isCurrentMonth = cellMonth === viewMonth;
+                      const isToday =
+                        cellDay === now.getDate() &&
+                        cellMonth === now.getMonth() &&
+                        cellYear === now.getFullYear();
+                      const cellIso = `${cellYear}-${String(cellMonth + 1).padStart(
+                        2,
+                        '0'
+                      )}-${String(cellDay).padStart(2, '0')}`;
+                      const dayEvents = events.filter(ev => ev.date === cellIso);
+
                       return (
-                        d.getDate() === day &&
-                        d.getMonth() === normalizedMonth &&
-                        d.getFullYear() === normalizedYear
+                        <div
+                          className={`calendar-cell ${isToday ? 'today-cell' : ''}`}
+                          key={cellIso}
+                          onDoubleClick={() =>
+                            open('Wydarzenie', {
+                              name: '',
+                              date: cellIso,
+                              eventType: 'Montaż',
+                              client: roleScopedClients[0]?.name || clients[0]?.name || '',
+                            })
+                          }
+                        >
+                          <span
+                            className={!isCurrentMonth ? 'muted' : ''}
+                            title={`Kliknij, aby dodać wyjazd na ${cellIso}`}
+                            style={{ cursor: 'pointer' }}
+                            onClick={() =>
+                              open('Wydarzenie', {
+                                name: '',
+                                date: cellIso,
+                                eventType: 'Montaż',
+                                client: roleScopedClients[0]?.name || clients[0]?.name || '',
+                              })
+                            }
+                          >
+                            {cellDay}
+                          </span>
+                          {dayEvents.map((ev, j) => {
+                            const eventColor =
+                              ev.eventType === 'Odbiór OSD'
+                                ? 'purple'
+                                : ev.eventType === 'Audyt'
+                                  ? 'orange'
+                                  : 'blue';
+                            return (
+                              <button
+                                key={ev.id || j}
+                                className={`calendar-event ${eventColor}`}
+                                title="Kliknij, aby edytować lub usunąć termin"
+                                onClick={() => open('Wydarzenie', ev)}
+                              >
+                                {ev.name}
+                              </button>
+                            );
+                          })}
+                        </div>
                       );
                     });
-                    return (
-                      <div className={`calendar-cell ${isToday ? 'today-cell' : ''}`} key={i}>
-                        <span className={day < 1 || day > 31 ? 'muted' : ''}>
-                          {day < 1 ? 30 : day > 31 ? day - 31 : day}
-                        </span>
-                        {dayEvents.map((ev, j) => {
-                          const eventColor =
-                            ev.eventType === 'Odbiór OSD'
-                              ? 'purple'
-                              : ev.eventType === 'Audyt'
-                                ? 'orange'
-                                : 'blue';
-                          return (
-                            <button
-                              key={ev.id || j}
-                              className={`calendar-event ${eventColor}`}
-                              onClick={() => {
-                                const matched = projects.find(
-                                  p => p.id === ev.installationId || p.client === ev.client
-                                );
-                                if (matched) {
-                                  setDetail(matched);
-                                  setPage('Realizacje OZE');
-                                } else {
-                                  notify(`${ev.name} · Termin: ${ev.date} (${ev.eventType || 'Montaż'})`);
-                                }
-                              }}
-                            >
-                              {ev.name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+                  })()}
                 </div>
               </div>
               <div className="calendar-key">
@@ -2159,28 +2385,49 @@ export default function App() {
               </div>
               <div className="detail-grid">
                 <Section
-                  title="Zainstalowana moc PV + Magazyny energii (ostatnie 6 mies.)"
-                  subtitle="Dynamika wdrożeń fotowoltaiki (turkus SM Project) do zgłoszeń OSD (złoty SM Project)"
+                  title="Moc PV (kWp) i Magazyny BESS (kWh) wg operatorów OSD i obiektów SQLite"
+                  subtitle="Dynamiczny wykres wyliczany na żywo z tabeli `installations` w bazie SQLite"
                 >
                   <div className="bar-chart">
-                    {[52, 68, 64, 84, 79, 94].map((n, i) => (
-                      <div className="bar-group" key={i}>
-                        <div className="bars">
-                          <i style={{ height: `${n}%` }} />
-                          <i style={{ height: `${22 - i * 3}%` }} />
+                    {osdOperators.map(osd => {
+                      const osdProjects = projects.filter(p => p.osdOperator === osd);
+                      const osdKwp = osdProjects.reduce((s, p) => s + p.powerKwp, 0);
+                      const osdKwh = osdProjects.reduce((s, p) => s + p.batteryKwh, 0);
+                      const maxMetric = Math.max(
+                        50,
+                        ...osdOperators.map(op =>
+                          projects
+                            .filter(pr => pr.osdOperator === op)
+                            .reduce((s, pr) => Math.max(s + pr.powerKwp, s + pr.batteryKwh), 0)
+                        )
+                      );
+                      const kwpHeight = Math.min(96, Math.max(12, Math.round((osdKwp / maxMetric) * 92)));
+                      const kwhHeight = Math.min(96, Math.max(12, Math.round((osdKwh / maxMetric) * 92)));
+                      return (
+                        <div
+                          className="bar-group"
+                          key={osd}
+                          title={`${osd}: ${osdKwp.toFixed(1)} kWp PV / ${osdKwh} kWh BESS (${osdProjects.length} obiektów)`}
+                        >
+                          <div className="bars">
+                            <i style={{ height: `${kwpHeight}%` }} />
+                            <i style={{ height: `${kwhHeight}%` }} />
+                          </div>
+                          <span>
+                            {osd} ({osdKwp.toFixed(1)} kWp)
+                          </span>
                         </div>
-                        <span>{['Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź'][i]}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div className="calendar-key">
                     <span>
                       <i className="legend-dot blue" />
-                      Odebrane instalacje OZE
+                      Moc instalacji PV (kWp w SQLite)
                     </span>
                     <span>
                       <i className="legend-dot orange" />
-                      Oczekujące na uzupełnienie OSD
+                      Pojemność magazynów energii BESS (kWh w SQLite)
                     </span>
                   </div>
                 </Section>
@@ -2357,18 +2604,92 @@ export default function App() {
             <div className="modal-header">
               <div>
                 <h2 id="modal-title">
-                  {editing ? 'Edytuj w bazie SQLite:' : 'Dodaj do bazy SQLite:'} {modal}
+                  {modal === 'BazaWiedzy'
+                    ? 'Baza Wiedzy OZE: Dotacje NFOŚiGW i Operatorzy OSD'
+                    : `${editing && editing.name ? 'Edytuj w bazie SQLite:' : 'Dodaj do bazy SQLite:'} ${modal}`}
                 </h2>
                 <p>
-                  {modal === 'Zadanie'
-                    ? 'Wprowadź dane leada i skorzystaj z kalkulatora doboru mocy OZE.'
-                    : 'Wszystkie pola zostaną trwale zapisane w bazie database/oze_crm.sqlite.'}
+                  {modal === 'BazaWiedzy'
+                    ? 'Aktualne progi dofinansowań (Mój Prąd 6.0, Czyste Powietrze) oraz procedury przyłączeniowe OSD.'
+                    : modal === 'Zadanie'
+                      ? 'Wprowadź dane leada i skorzystaj z kalkulatora doboru mocy OZE.'
+                      : 'Wszystkie pola zostaną trwale zapisane w bazie database/oze_crm.sqlite.'}
                 </p>
               </div>
               <button className="icon-button" aria-label="Zamknij okno" onClick={() => setModal(null)}>
                 <Icon name="close" />
               </button>
             </div>
+            {modal === 'BazaWiedzy' ? (
+              <div>
+                <div className="prose">
+                  <h3>1. Programy dotacyjne NFOŚiGW / WFOŚiGW (2026)</h3>
+                  {[
+                    [
+                      'Mój Prąd 6.0 (Mikroinstalacje PV 2–20 kWp + obligatoryjny magazyn BESS)',
+                      'Do 7 000 PLN na instalację PV + do 16 000 PLN na magazyn energii elektrycznej (min. 2 kWh) + do 5 000 PLN na magazyn ciepła. Rozliczenie w systemie net-billing.',
+                      'Do 28 000 PLN',
+                    ],
+                    [
+                      'Czyste Powietrze (Kompleksowa termomodernizacja + Pompa ciepła + PV)',
+                      'Trzy progi dochodowe (podstawowy, podwyższony, najwyższy z prefinansowaniem WFOŚiGW). Wymagany audyt energetyczny budynku i świadectwo charakterystyki energetycznej.',
+                      'Do 136 200 PLN',
+                    ],
+                    [
+                      'Ciepłe Mieszkanie (Budynki wielorodzinne i wspólnoty)',
+                      'Wsparcie wymiany nieefektywnych źródeł ciepła (kopciuchów) na pompy ciepła powietrze-powietrze / powietrze-woda oraz stolarkę okienną.',
+                      'Do 41 000 PLN',
+                    ],
+                  ].map(([progTitle, progDesc, progMax]) => (
+                    <div className="milestone" key={progTitle}>
+                      <span className="done-dot" />
+                      <div>
+                        <strong>{progTitle}</strong>
+                        <p>{progDesc}</p>
+                      </div>
+                      <Badge>{progMax}</Badge>
+                    </div>
+                  ))}
+
+                  <h3>2. Wymogi operatorów sieci dystrybucyjnych (OSD)</h3>
+                  {[
+                    [
+                      'PGE Dystrybucja / Tauron Dystrybucja / Enea Operator / Energa-Operator',
+                      'Zgłoszenie mikroinstalacji (PZO) na min. 30 dni przed planowanym uruchomieniem. Wymagany certyfikat NC RfG falownika, schemat jednokreskowy oraz protokół pomiarów elektrycznych.',
+                      'Termin OSD: do 30 dni',
+                    ],
+                    [
+                      'Instalacje B2B powyżej 50 kWp oraz magazyny BESS',
+                      'Obowiązek uzgodnienia projektu pod kątem ochrony przeciwpożarowej z rzeczoznawcą ds. zabezpieczeń ppoż. dla instalacji powyżej 6,5 kWp oraz montaż wyłącznika ppoż.',
+                      'Wymóg ppoż. > 6.5 kWp',
+                    ],
+                  ].map(([osdTitle, osdDesc, osdBadge]) => (
+                    <div className="milestone" key={osdTitle}>
+                      <span className="pending-dot" />
+                      <div>
+                        <strong>{osdTitle}</strong>
+                        <p>{osdDesc}</p>
+                      </div>
+                      <Badge>{osdBadge}</Badge>
+                    </div>
+                  ))}
+                </div>
+                <div className="modal-footer">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setModal(null);
+                      if (currentRole !== 'salesman') navigate('Dotacje i OSD');
+                    }}
+                  >
+                    Otwórz moduł Dotacje i OSD
+                  </Button>
+                  <Button type="button" variant="primary" onClick={() => setModal(null)}>
+                    Zamknij bazę wiedzy
+                  </Button>
+                </div>
+              </div>
+            ) : (
             <form
               onSubmit={async e => {
                 e.preventDefault();
@@ -2379,13 +2700,10 @@ export default function App() {
                 if (modal === 'Realizacja') {
                   const existingProj = editing && 'powerKwp' in editing ? editing : null;
                   const rawDeadline = String(form.get('deadline') || '');
+                  const defaultDeadlineDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
                   const formattedDeadline = rawDeadline.includes('-')
-                    ? new Date(rawDeadline + 'T12:00:00').toLocaleDateString('pl-PL', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric',
-                      })
-                    : existingProj?.deadline || '25 lis 2026';
+                    ? formatPlShortDate(new Date(rawDeadline + 'T12:00:00'))
+                    : existingProj?.deadline || formatPlShortDate(defaultDeadlineDate);
                   const statusVal = String(form.get('status') || 'Audyt i projekt');
                   const p: Project = {
                     id: editing?.id || Date.now(),
@@ -2394,7 +2712,7 @@ export default function App() {
                     manager: String(form.get('manager')),
                     status: statusVal,
                     priority: String(form.get('priority')),
-                    start: existingProj ? existingProj.start : '24 paź 2026',
+                    start: existingProj ? existingProj.start : formatPlShortDate(new Date()),
                     deadline: formattedDeadline,
                     progress:
                       statusVal === 'Odebrane'
@@ -2495,13 +2813,19 @@ export default function App() {
                   };
                   const snap = await DataLayer.saveUser(newEmp, currentUser.name);
                   applySnapshot(snap);
+                  if (employee?.id === newEmp.id) setEmployee(newEmp);
                 } else {
+                  const existingEv = editing && 'date' in editing ? editing : null;
+                  const clientName = String(form.get('client') || '');
+                  const matchedProj = projects.find(p => p.client === clientName);
                   const snap = await DataLayer.saveEvent(
                     {
+                      id: existingEv?.id,
                       name,
                       date: String(form.get('deadline')),
                       eventType: (form.get('eventType') as CalendarEvent['eventType']) || 'Montaż',
-                      client: String(form.get('client') || ''),
+                      client: clientName,
+                      installationId: existingEv?.installationId ?? matchedProj?.id,
                     },
                     currentUser.name
                   );
@@ -2711,28 +3035,76 @@ export default function App() {
                     </label>
                   </div>
                 ) : modal === 'Wydarzenie' ? (
-                  <div className="form-grid">
-                    <label>
-                      Typ wyjazdu w grafiku
-                      <select name="eventType" defaultValue="Montaż">
-                        <option value="Montaż">Montaż PV / Magazynu</option>
-                        <option value="Audyt">Audyt techniczny u klienta</option>
-                        <option value="Odbiór OSD">Odbiór OSD / Licznik</option>
-                      </select>
-                    </label>
-                    <label>
-                      Powiązany inwestor
-                      <select name="client" defaultValue={clients[0]?.name}>
-                        {clients.map(c => (
-                          <option key={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Data wyjazdu <span>*</span>
-                      <input required name="deadline" type="date" defaultValue="2026-10-29" />
-                    </label>
-                  </div>
+                  <>
+                    <div className="form-grid">
+                      <label>
+                        Typ wyjazdu w grafiku
+                        <select
+                          name="eventType"
+                          defaultValue={
+                            editing && 'eventType' in editing && editing.eventType
+                              ? editing.eventType
+                              : 'Montaż'
+                          }
+                        >
+                          <option value="Montaż">Montaż PV / Magazynu</option>
+                          <option value="Audyt">Audyt techniczny u klienta</option>
+                          <option value="Odbiór OSD">Odbiór OSD / Licznik</option>
+                        </select>
+                      </label>
+                      <label>
+                        Powiązany inwestor
+                        <select
+                          name="client"
+                          defaultValue={
+                            editing && 'client' in editing && editing.client
+                              ? editing.client
+                              : clients[0]?.name
+                          }
+                        >
+                          {clients.map(c => (
+                            <option key={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Data wyjazdu <span>*</span>
+                        <input
+                          required
+                          name="deadline"
+                          type="date"
+                          defaultValue={
+                            editing && 'date' in editing && editing.date
+                              ? editing.date
+                              : new Date().toISOString().slice(0, 10)
+                          }
+                        />
+                      </label>
+                    </div>
+                    {editing &&
+                      'date' in editing &&
+                      projects.some(
+                        p => p.id === editing.installationId || p.client === editing.client
+                      ) && (
+                        <div>
+                          <Button
+                            type="button"
+                            onClick={() => {
+                              const matched = projects.find(
+                                p => p.id === editing.installationId || p.client === editing.client
+                              );
+                              if (matched) {
+                                setModal(null);
+                                setDetail(matched);
+                                setPage('Realizacje OZE');
+                              }
+                            }}
+                          >
+                            Otwórz powiązaną realizację OZE <Icon name="arrow" size={14} />
+                          </Button>
+                        </div>
+                      )}
+                  </>
                 ) : (
                   <>
                     {/* Built-in OZE Power & Battery Calculator for Salesmen and Managers */}
@@ -2977,7 +3349,11 @@ export default function App() {
                           name="deadline"
                           type={modal === 'Zadanie' && editing ? 'text' : 'date'}
                           defaultValue={
-                            editing && 'due' in editing ? editing.due : '2026-11-15'
+                            editing && 'due' in editing
+                              ? editing.due
+                              : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+                                  .toISOString()
+                                  .slice(0, 10)
                           }
                         />
                       </label>
@@ -2997,19 +3373,26 @@ export default function App() {
               </div>
 
               <div className="modal-footer">
-                {editing && (modal === 'Realizacja' || modal === 'Zadanie' || modal === 'Klient') && (
-                  <Button type="button" onClick={handleDeleteRecord}>
-                    Usuń z SQL
-                  </Button>
-                )}
+                {editing &&
+                  editing.id !== undefined &&
+                  (modal === 'Realizacja' ||
+                    modal === 'Zadanie' ||
+                    modal === 'Klient' ||
+                    modal === 'Pracownik' ||
+                    modal === 'Wydarzenie') && (
+                    <Button type="button" onClick={handleDeleteRecord}>
+                      Usuń z SQL
+                    </Button>
+                  )}
                 <Button type="button" onClick={() => setModal(null)}>
                   Anuluj
                 </Button>
                 <Button type="submit" variant="primary">
-                  {editing ? 'Zapisz zmiany w SQL' : 'Zapisz w bazie SQL'}
+                  {editing && editing.id !== undefined ? 'Zapisz zmiany w SQL' : 'Zapisz w bazie SQL'}
                 </Button>
               </div>
             </form>
+            )}
           </div>
         </div>
       )}
