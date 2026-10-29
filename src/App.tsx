@@ -167,6 +167,7 @@ export default function App() {
   // Dropdown menus, toast alerts and calendar state initialized to current date
   const now = new Date();
   const [menu, setMenu] = useState('');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [sort, setSort] = useState(false);
   const [month, setMonth] = useState(now.getMonth());
@@ -204,6 +205,7 @@ export default function App() {
       } else if (e.key === 'Escape') {
         setModal(null);
         setMenu('');
+        setMobileNavOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -223,6 +225,7 @@ export default function App() {
     setClientDetail(null);
     setEmployee(null);
     setMenu('');
+    setMobileNavOpen(false);
     const canAccessCurrentPage = allPages
       .find(p => p.name === page)
       ?.roles.includes(user.systemRole);
@@ -251,6 +254,7 @@ export default function App() {
     setDeadline('Wszystkie operatorzy OSD');
     setView('table');
     setMenu('');
+    setMobileNavOpen(false);
   };
 
   // Open creation or edit modal and initialize calculator defaults
@@ -270,6 +274,7 @@ export default function App() {
     }
     setModal(type);
     setMenu('');
+    setMobileNavOpen(false);
   };
 
   // RBAC Data Isolation:
@@ -841,17 +846,35 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {/* Mobile drawer backdrop */}
+      {mobileNavOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Left sidebar navigation dynamically filtered by RBAC role */}
-      <aside className="sidebar">
-        <button className="brand" onClick={() => navigate('Przegląd')}>
-          <span className="brand-mark">
-            s<span>m</span>
-          </span>
-          <span>
-            SM-OZE<span className="workspace">Polska CRM</span>
-          </span>
-          <Icon name="down" size={15} />
-        </button>
+      <aside className={`sidebar ${mobileNavOpen ? 'mobile-open' : ''}`}>
+        <div className="brand-row">
+          <button className="brand" onClick={() => navigate('Przegląd')}>
+            <span className="brand-mark">
+              s<span>m</span>
+            </span>
+            <span>
+              SM-OZE<span className="workspace">Polska CRM</span>
+            </span>
+            <Icon name="down" size={15} />
+          </button>
+          <button
+            className="icon-button mobile-drawer-close"
+            aria-label="Zamknij menu"
+            onClick={() => setMobileNavOpen(false)}
+          >
+            <Icon name="close" size={18} />
+          </button>
+        </div>
 
         <div className="nav-caption">
           PANEL: {currentRole.toUpperCase()} ({allowedPages.length} MODUŁÓW)
@@ -936,6 +959,7 @@ export default function App() {
               setEditing(null);
               setModal('BazaWiedzy');
               setMenu('');
+              setMobileNavOpen(false);
             }}
           >
             <Icon name="help" />
@@ -945,7 +969,10 @@ export default function App() {
 
           <button
             className="sidebar-profile"
-            onClick={() => setMenu(menu === 'profile' ? '' : 'profile')}
+            onClick={() => {
+              setMobileNavOpen(false);
+              setMenu(menu === 'profile' ? '' : 'profile');
+            }}
           >
             <Avatar name={currentUser.name} color={currentUser.color} />
             <span>
@@ -962,21 +989,28 @@ export default function App() {
         {/* Top bar with quick RBAC role switcher */}
         <header className="topbar">
           <div className="breadcrumb">
-            <span>SM-OZE</span>
+            <button
+              className="icon-button mobile-menu-btn"
+              aria-label="Otwórz menu nawigacji"
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+            >
+              <Icon name="menu" size={18} />
+            </button>
+            <span className="breadcrumb-root">SM-OZE</span>
             <span className="slash">/</span>
             <strong>{page}</strong>
             <Badge>{currentRole.toUpperCase()}</Badge>
             {detail && (
               <>
-                <span>/</span>
-                <span>{detail.name}</span>
+                <span className="detail-sep">/</span>
+                <span className="detail-crumb">{detail.name}</span>
               </>
             )}
           </div>
 
           <div className="top-actions">
             {/* Quick Role Switcher for testing Admin / Manager / Salesman views */}
-            <div className="view-toggle" aria-label="Przełącznik roli użytkownika">
+            <div className="view-toggle role-switcher" aria-label="Przełącznik roli użytkownika">
               {(['admin', 'manager', 'salesman'] as SystemRole[]).map(r => (
                 <button
                   key={r}
@@ -1039,10 +1073,12 @@ export default function App() {
             <div className="menu-anchor">
               <Button
                 variant="primary compact"
+                className="create-btn"
                 onClick={() => setMenu(menu === 'create' ? '' : 'create')}
               >
                 <Icon name="plus" size={16} />
-                Dodaj w systemie
+                <span className="create-label-full">Dodaj w systemie</span>
+                <span className="create-label-short">Dodaj</span>
               </Button>
               {menu === 'create' && (
                 <div className="dropdown">
@@ -3907,6 +3943,41 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* Mobile bottom navigation bar for phones */}
+      <nav className="mobile-bottom-nav" aria-label="Nawigacja mobilna">
+        {allowedPages.slice(0, 4).map(p => {
+          const shortLabel =
+            p.name === 'Realizacje OZE'
+              ? 'Realizacje'
+              : p.name === 'Leady i Sprzedaż'
+                ? 'Leady'
+                : p.name === 'Dotacje i OSD'
+                  ? 'Dotacje'
+                  : p.name === 'Klienci i Obiekty'
+                    ? 'Klienci'
+                    : p.name === 'Grafik Montaży'
+                      ? 'Grafik'
+                      : p.name;
+          return (
+            <button
+              key={p.name}
+              className={`mobile-nav-item ${page === p.name && !mobileNavOpen ? 'selected' : ''}`}
+              onClick={() => navigate(p.name)}
+            >
+              <Icon name={p.icon} size={18} />
+              <span>{shortLabel}</span>
+            </button>
+          );
+        })}
+        <button
+          className={`mobile-nav-item ${mobileNavOpen ? 'selected' : ''}`}
+          onClick={() => setMobileNavOpen(!mobileNavOpen)}
+        >
+          <Icon name={mobileNavOpen ? 'close' : 'menu'} size={18} />
+          <span>Menu</span>
+        </button>
+      </nav>
     </div>
   );
 }

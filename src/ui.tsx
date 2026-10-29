@@ -25,6 +25,7 @@ export function Icon({ name, size = 18 }: { name: string; size?: number }) {
     help: <><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 4 3v2m-1 3v.5"/></>,
     logout: <path d="M9 4H4v16h5m0-8h12m-4-4 4 4-4 4"/>,
     list: <path d="M8 6h13M8 12h13M8 18h13M3 6h1m-1 6h1m-1 6h1"/>,
+    menu: <path d="M4 6h16M4 12h16M4 18h16"/>,
     flag: <path d="M5 21V4c5-4 9 4 14 0v10c-5 4-9-4-14 0"/>,
     mail: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/></>,
   };
