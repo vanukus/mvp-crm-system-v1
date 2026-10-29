@@ -15,6 +15,7 @@ import {
   type ActivityLog,
   type SystemRole,
   type SystemSettings,
+  type ReadinessChecklist,
 } from './data';
 import { DataLayer } from './db';
 import { Icon, Button, Avatar, Badge, Progress, Section } from './ui';
@@ -41,13 +42,40 @@ const projectStatuses = [
   'Odebrane',
 ];
 
-// Sales & technical lead funnel stages (Salesman funnel -> triggers Installation on 'Umowa podpisana (Wygrana)')
+// Sales & technical lead funnel stages (Salesman funnel -> triggers Installation on 'Podpisana umowa')
 const taskStatuses = [
   'Nowy lead',
   'Audyt / W toku',
   'Oferta / Weryfikacja',
-  'Umowa podpisana (Wygrana)',
+  'Podpisana umowa',
 ];
+
+// Helper to check if a lead status represents a signed contract
+function isSignedLeadStatus(status: string): boolean {
+  return (
+    status === 'Podpisana umowa' ||
+    status === 'Umowa podpisana (Wygrana)' ||
+    status === 'Zrealizowane'
+  );
+}
+
+// Parse numeric PLN amount from contractValue string like "58 400 PLN"
+function parsePlnAmount(val?: string): number {
+  if (!val) return 0;
+  const digits = val.replace(/[^\d]/g, '');
+  return digits ? Number(digits) : 0;
+}
+
+// Return normalized readiness checklist for an installation
+function getProjectChecklist(p: Project): ReadinessChecklist {
+  if (p.checklist) return p.checklist;
+  return {
+    inverterReady: p.progress >= 45,
+    panelsReady: p.progress >= 45,
+    batteryReady: p.progress >= 70,
+    osdSubmitted: p.subsidyStatus !== 'W przygotowaniu',
+  };
+}
 
 // Subsidy & OSD workflow statuses
 const subsidyStatuses: Project['subsidyStatus'][] = [
@@ -269,6 +297,61 @@ export default function App() {
   // Dynamic OZE totals calculated from role-scoped installations in SQLite
   const totalPowerKwp = roleScopedProjects.reduce((sum, p) => sum + p.powerKwp, 0).toFixed(1);
   const totalBatteryKwh = roleScopedProjects.reduce((sum, p) => sum + p.batteryKwh, 0);
+  const totalRevenuePln = projects.reduce((sum, p) => sum + parsePlnAmount(p.contractValue), 0);
+  const roleScopedRevenuePln = roleScopedProjects.reduce(
+    (sum, p) => sum + parsePlnAmount(p.contractValue),
+    0
+  );
+
+  // Salesman personal monthly plan metrics (Step 5)
+  const salesmanMonthlyGoal = 4;
+  const salesmanSignedLeadsCount = roleScopedTasks.filter(t => isSignedLeadStatus(t.status)).length;
+  const salesmanSignedProjectsCount = roleScopedProjects.length;
+  const salesmanSignedTotal = Math.max(salesmanSignedProjectsCount, salesmanSignedLeadsCount);
+  const salesmanPlanPercent = Math.min(
+    100,
+    Math.round((salesmanSignedTotal / salesmanMonthlyGoal) * 100)
+  );
+
+  // Manager operational bottleneck metrics (Step 5)
+  const stuckInstallations = projects.filter(p => {
+    const chk = getProjectChecklist(p);
+    const incompleteHardware = !chk.inverterReady || !chk.panelsReady || !chk.batteryReady;
+    return (
+      p.status === 'Audyt i projekt' ||
+      p.status === 'Kompletacja sprzętu' ||
+      p.installTeam.includes('Do wyznaczenia') ||
+      (p.status !== 'Odebrane' && incompleteHardware)
+    );
+  });
+  const stuckSubsidies = projects.filter(
+    p => p.subsidyStatus === 'W przygotowaniu' || p.subsidyStatus === 'Weryfikacja OSD'
+  );
+  const managerActionTasks = tasks.filter(
+    t =>
+      !isSignedLeadStatus(t.status) &&
+      (t.name.startsWith('Zadanie dla Managera:') ||
+        t.due === 'Po terminie' ||
+        t.due === 'Dzisiaj')
+  );
+
+  // Export all OZE installations to CSV report (Step 5)
+  const exportCsvReport = () => {
+    const csv =
+      'Instalacja,Klient,Adres,Wojewodztwo,Typ_Systemu,Moc_kWp,Magazyn_kWh,Operator_OSD,Dotacja,Status_Dotacji,Etap,Postep,Ekipa,Wartosc_Umowy\n' +
+      projects
+        .map(
+          p =>
+            `"${p.name}","${p.client}","${p.address || ''}","${p.voivodeship}","${p.systemType}","${p.powerKwp}","${p.batteryKwh}","${p.osdOperator}","${p.subsidyProgram}","${p.subsidyStatus}","${p.status}","${p.progress}%","${p.installTeam}","${p.contractValue}"`
+        )
+        .join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    a.download = 'raport-instalacji-oze.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    notify('Pełny raport realizacji OZE został pobrany w formacie CSV.');
+  };
 
   // Dynamic technology breakdown calculated from roleScopedProjects and active reportPeriod filter
   const periodScopedProjects = roleScopedProjects.filter(p => {
@@ -304,7 +387,7 @@ export default function App() {
   // Filter OZE installations by search, stage, priority, coordinator, and OSD grid operator
   const visibleProjects = roleScopedProjects
     .filter(p => {
-      const matchSearch = `${p.name} ${p.client} ${p.manager} ${p.systemType} ${p.voivodeship} ${p.osdOperator} ${p.notes || ''}`
+      const matchSearch = `${p.name} ${p.client} ${p.manager} ${p.systemType} ${p.voivodeship} ${p.address || ''} ${p.osdOperator} ${p.notes || ''}`
         .toLowerCase()
         .includes(search.toLowerCase());
       const matchFilter = filter === 'Wszystkie statusy' || p.status === filter;
@@ -321,7 +404,10 @@ export default function App() {
       .toLowerCase()
       .includes(search.toLowerCase());
     const matchPriority = priority === 'Wszystkie priorytety' || t.priority === priority;
-    const matchFilter = filter === 'Wszystkie statusy' || t.status === filter;
+    const matchFilter =
+      filter === 'Wszystkie statusy' ||
+      t.status === filter ||
+      (filter === 'Podpisana umowa' && isSignedLeadStatus(t.status));
     return matchSearch && matchPriority && matchFilter;
   });
 
@@ -353,6 +439,78 @@ export default function App() {
     notify(`Zapisano w SQLite — etap realizacji: ${status}`);
   };
 
+  // Toggle an item in the Manager's Installation Readiness Checklist (Step 4)
+  const toggleChecklistItem = async (project: Project, key: keyof ReadinessChecklist) => {
+    if (currentRole === 'salesman') {
+      notify('Tylko Manager lub Admin może zatwierdzać pozycje чек-листа gotowości do montażu.');
+      return;
+    }
+    const currentChk = getProjectChecklist(project);
+    const nextChk: ReadinessChecklist = {
+      ...currentChk,
+      [key]: !currentChk[key],
+    };
+    const readyCount = [
+      nextChk.inverterReady,
+      nextChk.panelsReady,
+      nextChk.batteryReady,
+      nextChk.osdSubmitted,
+    ].filter(Boolean).length;
+
+    const nextSubsidyStatus: Project['subsidyStatus'] =
+      key === 'osdSubmitted'
+        ? nextChk.osdSubmitted
+          ? project.subsidyStatus === 'W przygotowaniu'
+            ? 'Weryfikacja OSD'
+            : project.subsidyStatus
+          : 'W przygotowaniu'
+        : project.subsidyStatus;
+
+    const nextStatus =
+      readyCount === 4 && project.status === 'Kompletacja sprzętu'
+        ? 'Montaż w toku'
+        : readyCount >= 2 && project.status === 'Audyt i projekt'
+          ? 'Kompletacja sprzętu'
+          : project.status;
+
+    const nextProgress =
+      project.status === 'Odebrane'
+        ? 100
+        : Math.max(project.progress, 15 + readyCount * 18);
+
+    const updated: Project = {
+      ...project,
+      checklist: nextChk,
+      subsidyStatus: nextSubsidyStatus,
+      status: nextStatus,
+      progress: Math.min(100, nextProgress),
+    };
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name, currentRole);
+    applySnapshot(snap);
+    if (detail?.id === project.id) setDetail(updated);
+    notify(
+      `Checklista montażowa (${readyCount}/4): zaktualizowano w SQLite dla ${project.name}`
+    );
+  };
+
+  // Assign an installation crew to an object (Manager action resolving Step 3 auto-task)
+  const assignInstallTeam = async (project: Project, teamName: string) => {
+    if (currentRole === 'salesman') {
+      notify('Tylko Manager lub Admin może wyznaczać brygadę monterską.');
+      return;
+    }
+    const updated: Project = {
+      ...project,
+      installTeam: teamName,
+      status: project.status === 'Audyt i projekt' ? 'Kompletacja sprzętu' : project.status,
+      progress: Math.max(project.progress, 35),
+    };
+    const snap = await DataLayer.saveInstallation(updated, currentUser.name, currentRole);
+    applySnapshot(snap);
+    if (detail?.id === project.id) setDetail(updated);
+    notify(`Przypisano brygadę ${teamName} do obiektu ${project.name}`);
+  };
+
   // Update status of a lead/task in SQLite; triggers automatic installation creation when signed!
   const changeTask = async (id: number, status: string) => {
     const target = tasks.find(x => x.id === id);
@@ -362,13 +520,13 @@ export default function App() {
     const snap = await DataLayer.saveLead(updated, currentUser.name);
     applySnapshot(snap);
 
-    if (status === 'Umowa podpisana (Wygrana)' || status === 'Zrealizowane') {
+    if (isSignedLeadStatus(status)) {
       if (snap.projects.length > prevCount) {
         notify(
-          'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE, wniosek OSD oraz audyt w Grafiku.'
+          'Podpisana umowa! Utworzono obiekt w Realizacje OZE (Audyt i projekt), wpis w Dotacje i OSD (W przygotowaniu) oraz zadanie dla Managera: wyznacz ekipę.'
         );
       } else {
-        notify(`Zaktualizowano status leada w SQLite: ${status}`);
+        notify(`Zaktualizowano status w SQLite: ${status}`);
       }
     }
   };
@@ -550,8 +708,7 @@ export default function App() {
   const taskList = (list: Task[]) => (
     <div className="task-list">
       {list.map(t => {
-        const isSigned =
-          t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane';
+        const isSigned = isSignedLeadStatus(t.status);
         return (
           <div className={`task-row ${isSigned ? 'completed' : ''}`} key={t.id}>
             <input
@@ -561,7 +718,7 @@ export default function App() {
               onChange={e =>
                 changeTask(
                   t.id,
-                  e.target.checked ? 'Umowa podpisana (Wygrana)' : 'Nowy lead'
+                  e.target.checked ? 'Podpisana umowa' : 'Nowy lead'
                 )
               }
             />
@@ -712,13 +869,7 @@ export default function App() {
                 <span>{p.name}</span>
                 {p.name === 'Leady i Sprzedaż' && (
                   <span className="nav-count">
-                    {
-                      roleScopedTasks.filter(
-                        t =>
-                          t.status !== 'Umowa podpisana (Wygrana)' &&
-                          t.status !== 'Zrealizowane'
-                      ).length
-                    }
+                    {roleScopedTasks.filter(t => !isSignedLeadStatus(t.status)).length}
                   </span>
                 )}
                 {p.name === 'Dotacje i OSD' && (
@@ -1004,29 +1155,59 @@ export default function App() {
               <div className="kpi-grid">
                 {[
                   [
-                    currentRole === 'salesman' ? 'Twoja sprzedana moc PV' : 'Moc PV w realizacji',
-                    `${totalPowerKwp} kWp`,
+                    currentRole === 'salesman'
+                      ? 'Twój plan miesięczny (Umowy)'
+                      : currentRole === 'admin'
+                        ? 'Łączny przychód (Polska)'
+                        : 'Moc PV w realizacji',
+                    currentRole === 'salesman'
+                      ? `${salesmanSignedTotal} / ${salesmanMonthlyGoal} umów`
+                      : currentRole === 'admin'
+                        ? `${totalRevenuePln.toLocaleString('pl-PL')} PLN`
+                        : `${totalPowerKwp} kWp`,
                     'sun',
-                    `${roleScopedProjects.filter(p => p.powerKwp > 0).length} inst.`,
-                    'z modułami fotowoltaicznymi',
+                    currentRole === 'salesman'
+                      ? `${salesmanPlanPercent}% planu`
+                      : `${roleScopedProjects.filter(p => p.powerKwp > 0).length} inst.`,
+                    currentRole === 'salesman'
+                      ? `Wartość: ${roleScopedRevenuePln.toLocaleString('pl-PL')} PLN`
+                      : currentRole === 'admin'
+                        ? `Łącznie ${totalPowerKwp} kWp w kraju`
+                        : 'z modułami fotowoltaicznymi',
                     'blue',
                   ],
                   [
-                    currentRole === 'salesman' ? 'Twoje magazyny energii' : 'Magazyny energii (BESS)',
-                    `${totalBatteryKwh} kWh`,
+                    currentRole === 'salesman'
+                      ? 'Twoja sprzedana moc i BESS'
+                      : 'Magazyny energii (BESS) w kraju',
+                    currentRole === 'salesman'
+                      ? `${totalPowerKwp} kWp`
+                      : `${totalBatteryKwh} kWh`,
                     'folder',
-                    `${roleScopedProjects.filter(p => p.batteryKwh > 0).length} szt.`,
+                    currentRole === 'salesman'
+                      ? `+${totalBatteryKwh} kWh`
+                      : `${roleScopedProjects.filter(p => p.batteryKwh > 0).length} szt.`,
                     'z magazynem energii LiFePO4',
                     'purple',
                   ],
                   [
-                    currentRole === 'salesman' ? 'Aktywne leady handlowe' : 'Wnioski Dotacje / OSD',
+                    currentRole === 'salesman'
+                      ? 'Aktywne leady handlowe'
+                      : currentRole === 'manager'
+                        ? 'Wąskie gardła (Montaże / OSD)'
+                        : 'Wnioski Dotacje / OSD',
                     currentRole === 'salesman'
                       ? `${roleScopedTasks.length} szans`
-                      : `${roleScopedProjects.filter(p => p.subsidyStatus !== 'Wypłacono').length} w toku`,
+                      : currentRole === 'manager'
+                        ? `${stuckInstallations.length} obiektów`
+                        : `${roleScopedProjects.filter(p => p.subsidyStatus !== 'Wypłacono').length} w toku`,
                     'clock',
-                    `${roleScopedProjects.filter(p => p.status === 'Odebrane').length}/${Math.max(1, roleScopedProjects.length)}`,
-                    'odebranych technicznie obiektów',
+                    currentRole === 'manager'
+                      ? `${stuckSubsidies.length} wniosków OSD`
+                      : `${roleScopedProjects.filter(p => p.status === 'Odebrane').length}/${Math.max(1, roleScopedProjects.length)}`,
+                    currentRole === 'manager'
+                      ? 'wymaga interwencji koordynatora'
+                      : 'odebranych technicznie obiektów',
                     'orange',
                   ],
                   [
@@ -1063,6 +1244,163 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
+              {/* Step 5: Role-Specific KPI & Operational Dashboard (Salesman / Manager / Admin) */}
+              {currentRole === 'salesman' ? (
+                <Section
+                  title={`Twój osobisty plan wykonania umów — Październik 2026 (${currentUser.name})`}
+                  subtitle="Osobisty dashboard Handlowca: liczba podpisanych umów w miesiącu, wygenerowany obrót i konwersja lejka"
+                  action={
+                    <Button variant="primary compact" onClick={() => navigate('Leady i Sprzedaż')}>
+                      Podpisz kolejną umowę <Icon name="arrow" size={14} />
+                    </Button>
+                  }
+                  className="recent-projects"
+                >
+                  <div className="detail-stats">
+                    <div>
+                      <small>Podpisane umowy w miesiącu</small>
+                      <strong>
+                        {salesmanSignedTotal} z {salesmanMonthlyGoal} umów ({salesmanPlanPercent}%)
+                      </strong>
+                      <Progress value={salesmanPlanPercent} />
+                    </div>
+                    <div>
+                      <small>Wartość Twoich podpisanych umów</small>
+                      <strong>{roleScopedRevenuePln.toLocaleString('pl-PL')} PLN</strong>
+                    </div>
+                    <div>
+                      <small>Sprzedana moc PV + BESS</small>
+                      <strong>
+                        {totalPowerKwp} kWp + {totalBatteryKwh} kWh
+                      </strong>
+                    </div>
+                    <div>
+                      <small>Aktywne szanse w lejku</small>
+                      <strong>
+                        {roleScopedTasks.filter(t => !isSignedLeadStatus(t.status)).length} w toku
+                      </strong>
+                    </div>
+                  </div>
+                </Section>
+              ) : currentRole === 'manager' ? (
+                <Section
+                  title="Dashboard Operacyjny Managera — Wąskie gardła (Gdzie utknęły montaże i dotacje)"
+                  subtitle="Automatyczna detekcja obiektów wymagających kompletacji sprzętu, wyznaczenia ekipy lub zgłoszenia do PGE / Tauron / Enea / Energa"
+                  action={
+                    <Button onClick={() => navigate('Dotacje i OSD')}>
+                      Centrum Dotacji i OSD ({stuckSubsidies.length}) <Icon name="arrow" size={14} />
+                    </Button>
+                  }
+                  className="recent-projects"
+                >
+                  <div className="prose">
+                    {[
+                      ...stuckInstallations.slice(0, 3).map(p => {
+                        const chk = getProjectChecklist(p);
+                        const readyItems = [
+                          chk.inverterReady,
+                          chk.panelsReady,
+                          chk.batteryReady,
+                          chk.osdSubmitted,
+                        ].filter(Boolean).length;
+                        return {
+                          key: `inst-${p.id}`,
+                          title: `Montaż / Sprzęt: ${p.name} (${p.client})`,
+                          desc: `Etap: ${p.status} · Brygada: ${p.installTeam} · Checklista gotowości: ${readyItems}/4 poz. · Adres: ${p.address || p.voivodeship}`,
+                          badge: p.installTeam.includes('Do wyznaczenia')
+                            ? 'Wyznacz ekipę!'
+                            : `Kompletacja ${readyItems}/4`,
+                          onClick: () => {
+                            setDetail(p);
+                            setPage('Realizacje OZE');
+                            setTab('Ekipa i Sprzęt');
+                          },
+                        };
+                      }),
+                      ...stuckSubsidies.slice(0, 2).map(p => ({
+                        key: `sub-${p.id}`,
+                        title: `Wniosek Dotacja / OSD (${p.osdOperator}): ${p.name}`,
+                        desc: `Program: ${p.subsidyProgram} · Status: ${p.subsidyStatus} · Inwestor: ${p.client}`,
+                        badge: `${p.osdOperator}: ${p.subsidyStatus}`,
+                        onClick: () => {
+                          setDetail(p);
+                          setPage('Realizacje OZE');
+                          setTab('Dotacje i OSD');
+                        },
+                      })),
+                      ...managerActionTasks.slice(0, 2).map(t => ({
+                        key: `task-${t.id}`,
+                        title: t.name,
+                        desc: `Klient: ${t.project} · Termin: ${t.due} · Odpowiedzialny: ${t.assignee}`,
+                        badge: t.priority,
+                        onClick: () => open('Zadanie', t),
+                      })),
+                    ].map(item => (
+                      <div
+                        className="milestone"
+                        key={item.key}
+                        style={{ cursor: 'pointer' }}
+                        onClick={item.onClick}
+                      >
+                        <span className="pending-dot" />
+                        <div>
+                          <strong>{item.title}</strong>
+                          <p>{item.desc}</p>
+                        </div>
+                        <Badge>{item.badge}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </Section>
+              ) : (
+                <Section
+                  title="Zbiorczy Dashboard Zarządu (Admin) — Przychód, kWh/kWp w kraju i Eksport"
+                  subtitle=" zagregowane KPI ze wszystkich województw i oddziałów w bazie SQLite"
+                  action={
+                    <div className="quick-actions" style={{ margin: 0 }}>
+                      <Button onClick={exportCsvReport}>
+                        <Icon name="folder" size={14} />
+                        Eksportuj raport (CSV)
+                      </Button>
+                      <Button
+                        variant="primary compact"
+                        onClick={async () => {
+                          await DataLayer.downloadBackup();
+                          notify('Pobrano pełny zrzut bazy danych SQLite (JSON).');
+                        }}
+                      >
+                        Eksportuj bazę (JSON)
+                      </Button>
+                    </div>
+                  }
+                  className="recent-projects"
+                >
+                  <div className="detail-stats">
+                    <div>
+                      <small>Łączny przychód z umów (Brutto)</small>
+                      <strong>{totalRevenuePln.toLocaleString('pl-PL')} PLN</strong>
+                    </div>
+                    <div>
+                      <small>Łączna moc PV w kraju</small>
+                      <strong>{totalPowerKwp} kWp</strong>
+                    </div>
+                    <div>
+                      <small>Pojemność magazynów BESS w kraju</small>
+                      <strong>{totalBatteryKwh} kWh</strong>
+                    </div>
+                    <div>
+                      <small>Operatorzy OSD (PGE / Tauron / Enea / Energa)</small>
+                      <strong>
+                        {projects.filter(p => p.osdOperator === 'PGE').length} PGE ·{' '}
+                        {projects.filter(p => p.osdOperator === 'Tauron').length} Tauron ·{' '}
+                        {projects.filter(p => p.osdOperator === 'Enea').length} Enea ·{' '}
+                        {projects.filter(p => p.osdOperator === 'Energa').length} Energa
+                      </strong>
+                    </div>
+                  </div>
+                </Section>
+              )}
 
               <div className="overview-middle">
                 <Section
@@ -1261,8 +1599,13 @@ export default function App() {
                     <Badge>{detail.status}</Badge>
                   </div>
                   <p>
-                    Inwestor: <strong>{detail.client}</strong> · Lokalizacja: Woj. {detail.voivodeship} · Typ systemu:{' '}
-                    <strong>{detail.systemType}</strong>
+                    Inwestor: <strong>{detail.client}</strong> · Adres montażu:{' '}
+                    <strong>
+                      {detail.address ||
+                        clients.find(c => c.name === detail.client)?.address ||
+                        `Woj. ${detail.voivodeship}`}
+                    </strong>{' '}
+                    ({detail.voivodeship}) · Typ systemu: <strong>{detail.systemType}</strong>
                   </p>
                 </div>
                 {currentRole !== 'salesman' && (
@@ -1286,8 +1629,23 @@ export default function App() {
                   <Badge>{detail.subsidyProgram}</Badge>
                 </div>
                 <div>
-                  <small>Poszycie / Konstrukcja</small>
-                  <strong>{detail.roofType}</strong>
+                  <small>Brygada monterska (Manager)</small>
+                  {currentRole !== 'salesman' ? (
+                    <select
+                      aria-label="Wyznacz ekipę montażową"
+                      value={detail.installTeam}
+                      onChange={e => assignInstallTeam(detail, e.target.value)}
+                    >
+                      <option value="Do wyznaczenia (Manager)">Do wyznaczenia (Manager)</option>
+                      <option value="Ekipa Mazowsze-1">Ekipa Mazowsze-1</option>
+                      <option value="Ekipa Małopolska-2">Ekipa Małopolska-2</option>
+                      <option value="Ekipa Wielkopolska-1">Ekipa Wielkopolska-1</option>
+                      <option value="Ekipa Śląsk-3">Ekipa Śląsk-3</option>
+                      <option value="Ekipa Pomorze-1">Ekipa Pomorze-1</option>
+                    </select>
+                  ) : (
+                    <strong>{detail.installTeam}</strong>
+                  )}
                 </div>
                 <div>
                   <small>Wartość umowy brutto</small>
@@ -1309,15 +1667,20 @@ export default function App() {
 
               {tab === 'Przegląd' ? (
                 <div className="detail-grid">
-                  <Section title="Specyfikacja techniczna i kamienie milowe OZE">
+                  <Section title="Specyfikacja techniczna i Checklista Gotowości do Montażu (Dla Managera)">
                     <div className="prose">
-                      <h3>Zakres inwestycji i notatki techniczne (SQLite)</h3>
+                      <h3>Zakres inwestycji i lokalizacja montażu (SQLite)</h3>
                       <p>
                         Kompleksowa realizacja systemu <strong>{detail.systemType}</strong> dla inwestora{' '}
-                        <strong>{detail.client}</strong> w województwie {detail.voivodeship.toLowerCase()}. Instalacja
-                        obejmuje dobór falownika hybrydowego, magazynu energii {detail.batteryKwh} kWh z funkcją
-                        zasilania awaryjnego (EPS/Backup) oraz pełną obsługę przyłączeniową w sieci{' '}
-                        <strong>{detail.osdOperator}</strong>.
+                        <strong>{detail.client}</strong> pod adresem{' '}
+                        <strong>
+                          {detail.address ||
+                            clients.find(c => c.name === detail.client)?.address ||
+                            detail.voivodeship}
+                        </strong>{' '}
+                        (woj. {detail.voivodeship.toLowerCase()}). Instalacja obejmuje dobór falownika hybrydowego,
+                        magazynu energii {detail.batteryKwh} kWh z funkcją zasilania awaryjnego (EPS/Backup) oraz
+                        pełną obsługę przyłączeniową w sieci <strong>{detail.osdOperator}</strong>.
                         {detail.notes ? (
                           <>
                             <br />
@@ -1325,38 +1688,75 @@ export default function App() {
                           </>
                         ) : null}
                       </p>
-                      <h3>Etapy procesu wdrożeniowego (kliknij etap na górze lub zmień poniżej)</h3>
-                      {[
-                        [
-                          '1. Audyt techniczny i projekt wykonawczy',
-                          'Pomiary dachu, analiza zacienienia, dobór zabezpieczeń AC/DC i akceptacja klienta',
-                          'Odebrane',
-                        ],
-                        [
-                          '2. Kompletacja komponentów i logistyka',
-                          'Wydanie modułów PV, falownika hybrydowego oraz modułów bateryjnych z magazynu centralnego',
-                          detail.progress >= 40 ? 'Odebrane' : 'W trakcie',
-                        ],
-                        [
-                          '3. Montaż elektryczny i uruchomienie przez ekipę',
-                          `Realizacja przez zespół: ${detail.installTeam} · próby napięciowe i pomiary rezystancji uziemienia`,
-                          detail.progress >= 70 ? 'Montaż w toku' : 'Audyt i projekt',
-                        ],
-                        [
-                          '4. Zgłoszenie mikroinstalacji do OSD i wniosek dotacyjny',
-                          `Operator: ${detail.osdOperator} · Program: ${detail.subsidyProgram} (${detail.subsidyStatus})`,
-                          detail.progress === 100 ? 'Odebrane' : 'Zgłoszenie OSD / Dotacja',
-                        ],
-                      ].map(([t, desc, stat], i) => (
-                        <div className="milestone" key={t}>
-                          <span className={i < 2 || detail.progress === 100 ? 'done-dot' : 'pending-dot'} />
-                          <div>
-                            <strong>{t}</strong>
-                            <p>{desc}</p>
-                          </div>
-                          <Badge>{stat}</Badge>
-                        </div>
-                      ))}
+
+                      <h3>
+                        Checklista gotowości do montażu (zaznacz pozycje sprzętowe i zgłoszenie OSD)
+                      </h3>
+                      <div className="task-list">
+                        {(() => {
+                          const chk = getProjectChecklist(detail);
+                          const items: {
+                            key: keyof ReadinessChecklist;
+                            label: string;
+                            sub: string;
+                            checked: boolean;
+                          }[] = [
+                            {
+                              key: 'inverterReady',
+                              label: `1. Kompletacja falownika hybrydowego 3-fazowego (${Math.max(
+                                6,
+                                Math.ceil(detail.powerKwp || 10)
+                              )} kW + EPS)`,
+                              sub: `Wydanie inwertera i zabezpieczeń AC/DC pod wymogi sieci ${detail.osdOperator}`,
+                              checked: chk.inverterReady,
+                            },
+                            {
+                              key: 'panelsReady',
+                              label: `2. Kompletacja paneli fotowoltaicznych (${Math.ceil(
+                                ((detail.powerKwp || 6) * 1000) / 450
+                              )} szt. × 450 Wp) i konstrukcji (${detail.roofType})`,
+                              sub: `Łączna moc: ${detail.powerKwp} kWp · gotowość do wyjazdu brygady ${detail.installTeam}`,
+                              checked: chk.panelsReady,
+                            },
+                            {
+                              key: 'batteryReady',
+                              label: `3. Kompletacja magazynu energii BESS LiFePO4 (${detail.batteryKwh} kWh + BMS)`,
+                              sub: `Kwalifikacja do programu dotacyjnego: ${detail.subsidyProgram}`,
+                              checked: chk.batteryReady,
+                            },
+                            {
+                              key: 'osdSubmitted',
+                              label: `4. Status złożenia wniosku przyłączeniowego w OSD (${detail.osdOperator} — PGE/Tauron/Enea/Energa)`,
+                              sub: `Aktualny status formalny: ${detail.subsidyStatus} · Operator: ${detail.osdOperator} Dystrybucja`,
+                              checked: chk.osdSubmitted,
+                            },
+                          ];
+                          return items.map(item => (
+                            <div
+                              className={`task-row ${item.checked ? 'completed' : ''}`}
+                              key={item.key}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={currentRole === 'salesman'}
+                                checked={item.checked}
+                                onChange={() => toggleChecklistItem(detail, item.key)}
+                                aria-label={item.label}
+                              />
+                              <div className="task-copy">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleChecklistItem(detail, item.key)}
+                                >
+                                  {item.label}
+                                </button>
+                                <span>{item.sub}</span>
+                              </div>
+                              <Badge>{item.checked ? 'Gotowe' : 'Oczekuje'}</Badge>
+                            </div>
+                          ));
+                        })()}
+                      </div>
                     </div>
                   </Section>
                   <Section title="Ostatnie aktualizacje na obiekcie">{activity}</Section>
@@ -1635,7 +2035,7 @@ export default function App() {
               {/* Sales & Lead qualification pipeline with automated conversion to Realizacje OZE */}
               <PageHeading
                 title="Leady, Audyty i Lejek Sprzedaży"
-                subtitle="Zmień etap na 'Umowa podpisana (Wygrana)', aby automatycznie przekazać obiekt do Realizacji OZE i działu Dotacji."
+                subtitle="Zmień etap na 'Podpisana umowa', aby automatycznie utworzyć obiekt w Realizacje OZE, wpis w Dotacje i OSD oraz zadanie dla Managera."
                 button="Dodaj lead + Kalkulator"
                 onClick={() => open('Zadanie')}
               />
@@ -1653,13 +2053,7 @@ export default function App() {
                 </span>
                 <span>
                   <i className="legend-dot green" />
-                  {
-                    roleScopedTasks.filter(
-                      t =>
-                        t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane'
-                    ).length
-                  }{' '}
-                  Podpisane umowy (przekazane do montażu)
+                  {roleScopedTasks.filter(t => isSignedLeadStatus(t.status)).length} Podpisane umowy (przekazane do montażu)
                 </span>
               </div>
               {toolbar('tasks')}
@@ -1704,7 +2098,7 @@ export default function App() {
                             <td className={t.due === 'Po terminie' ? 'overdue-text' : ''}>{t.due}</td>
                             <td>
                               <select
-                                value={t.status}
+                                value={isSignedLeadStatus(t.status) ? 'Podpisana umowa' : t.status}
                                 aria-label={`Status dla ${t.name}`}
                                 onChange={e => changeTask(t.id, e.target.value)}
                               >
@@ -1733,20 +2127,22 @@ export default function App() {
                 </Section>
               ) : (
                 <div className="kanban task-kanban">
-                  {taskStatuses.map(s => (
-                    <div
-                      className="kanban-column"
-                      key={s}
-                      onDragOver={e => e.preventDefault()}
-                      onDrop={e => changeTask(Number(e.dataTransfer.getData('text')), s)}
-                    >
-                      <h3>
-                        {s}
-                        <span>{visibleTasks.filter(t => t.status === s).length}</span>
-                      </h3>
-                      {visibleTasks
-                        .filter(t => t.status === s)
-                        .map(t => (
+                  {taskStatuses.map(s => {
+                    const colTasks = visibleTasks.filter(t =>
+                      s === 'Podpisana umowa' ? isSignedLeadStatus(t.status) : t.status === s
+                    );
+                    return (
+                      <div
+                        className="kanban-column"
+                        key={s}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => changeTask(Number(e.dataTransfer.getData('text')), s)}
+                      >
+                        <h3>
+                          {s}
+                          <span>{colTasks.length}</span>
+                        </h3>
+                        {colTasks.map(t => (
                           <div
                             className="kanban-card"
                             draggable
@@ -1766,7 +2162,7 @@ export default function App() {
                             </div>
                             <select
                               aria-label={`Status dla ${t.name}`}
-                              value={t.status}
+                              value={isSignedLeadStatus(t.status) ? 'Podpisana umowa' : t.status}
                               onChange={e => changeTask(t.id, e.target.value)}
                             >
                               {taskStatuses.map(x => (
@@ -1775,8 +2171,9 @@ export default function App() {
                             </select>
                           </div>
                         ))}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </>
@@ -2329,51 +2726,36 @@ export default function App() {
             <>
               {/* OZE Performance Analytics & Export */}
               <PageHeading
-                title="Raporty i Analityka OZE"
-                subtitle="Analiza mocy zainstalowanej (kWp), sprzedaży magazynów energii (kWh) i efektywności ekip."
+                title="Raporty, Przychód i Analityka OZE"
+                subtitle="Zbiorczy raport przychodu (PLN), mocy zainstalowanej (kWp), magazynów energii (kWh) w kraju oraz wąskich gardeł."
                 button="Eksportuj bazę OZE (CSV)"
-                onClick={() => {
-                  const csv =
-                    'Instalacja,Klient,Typ_Systemu,Moc_kWp,Magazyn_kWh,Operator_OSD,Dotacja,Status_Dotacji,Etap,Postep,Wartosc_Umowy\n' +
-                    projects
-                      .map(
-                        p =>
-                          `"${p.name}","${p.client}","${p.systemType}","${p.powerKwp}","${p.batteryKwh}","${p.osdOperator}","${p.subsidyProgram}","${p.subsidyStatus}","${p.status}","${p.progress}%","${p.contractValue}"`
-                      )
-                      .join('\n');
-                  const a = document.createElement('a');
-                  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-                  a.download = 'raport-instalacji-oze.csv';
-                  a.click();
-                  URL.revokeObjectURL(a.href);
-                  notify('Pełny raport realizacji OZE został pobrany w formacie CSV.');
-                }}
+                onClick={exportCsvReport}
               />
               <div className="kpi-grid">
                 {[
                   [
-                    'Łączna moc portfela OZE',
-                    `${projects.reduce((s, p) => s + p.powerKwp, 0).toFixed(1)} kWp`,
-                    `${projects.length} aktywnych obiektów w SQLite`,
+                    'Łączny przychód z umów (Polska)',
+                    `${totalRevenuePln.toLocaleString('pl-PL')} PLN`,
+                    `${projects.length} aktywnych umów w bazie SQLite`,
                   ],
                   [
-                    'Udział PV z magazynem BESS',
+                    'Łączna moc PV w kraju',
+                    `${projects.reduce((s, p) => s + p.powerKwp, 0).toFixed(1)} kWp`,
+                    `Średnio ${(
+                      projects.reduce((s, p) => s + p.powerKwp, 0) / Math.max(1, projects.length)
+                    ).toFixed(1)} kWp na obiekt`,
+                  ],
+                  [
+                    'Magazyny energii (kWh w kraju)',
+                    `${projects.reduce((s, p) => s + p.batteryKwh, 0)} kWh`,
                     `${Math.round(
                       (projects.filter(p => p.batteryKwh > 0).length / Math.max(1, projects.length)) * 100
-                    )}%`,
-                    `Łącznie ${projects.reduce((s, p) => s + p.batteryKwh, 0)} kWh pojemności`,
+                    )}% instalacji z magazynem BESS`,
                   ],
                   [
-                    'Wnioski wypłacone / odebrane',
-                    `${projects.filter(p => p.subsidyStatus === 'Wypłacono' || p.status === 'Odebrane').length} szt.`,
-                    'Zsynchronizowane z NFOŚiGW / OSD',
-                  ],
-                  [
-                    'Średnie obłożenie zespołów',
-                    `${Math.round(
-                      users.reduce((s, u) => s + u.workload, 0) / Math.max(1, users.length)
-                    )}%`,
-                    `${users.length} pracowników w bazie RBAC`,
+                    'Wąskie gardła / Oczekujące OSD',
+                    `${stuckSubsidies.length} wniosków`,
+                    `${projects.filter(p => p.subsidyStatus === 'Wypłacono' || p.status === 'Odebrane').length} odebranych i rozliczonych`,
                   ],
                 ].map(([t, v, s]) => (
                   <div className="kpi-card" key={t}>
@@ -2705,10 +3087,18 @@ export default function App() {
                     ? formatPlShortDate(new Date(rawDeadline + 'T12:00:00'))
                     : existingProj?.deadline || formatPlShortDate(defaultDeadlineDate);
                   const statusVal = String(form.get('status') || 'Audyt i projekt');
+                  const clientNameVal = String(form.get('client'));
+                  const matchedClient = clients.find(c => c.name === clientNameVal);
+                  const checklistObj: ReadinessChecklist = {
+                    inverterReady: form.get('chk_inverter') === 'on',
+                    panelsReady: form.get('chk_panels') === 'on',
+                    batteryReady: form.get('chk_battery') === 'on',
+                    osdSubmitted: form.get('chk_osd') === 'on',
+                  };
                   const p: Project = {
                     id: editing?.id || Date.now(),
                     name,
-                    client: String(form.get('client')),
+                    client: clientNameVal,
                     manager: String(form.get('manager')),
                     status: statusVal,
                     priority: String(form.get('priority')),
@@ -2736,7 +3126,11 @@ export default function App() {
                       (form.get('subsidyProgram') as Project['subsidyProgram']) || settings.defaultSubsidy,
                     subsidyStatus:
                       (form.get('subsidyStatus') as Project['subsidyStatus']) ||
-                      (existingProj ? existingProj.subsidyStatus : 'W przygotowaniu'),
+                      (checklistObj.osdSubmitted
+                        ? 'Weryfikacja OSD'
+                        : existingProj
+                          ? existingProj.subsidyStatus
+                          : 'W przygotowaniu'),
                     roofType:
                       (form.get('roofType') as Project['roofType']) ||
                       (existingProj ? existingProj.roofType : 'Dachówka ceramiczna'),
@@ -2750,7 +3144,14 @@ export default function App() {
                     voivodeship: String(
                       form.get('voivodeship') || (existingProj ? existingProj.voivodeship : 'Mazowieckie')
                     ),
+                    address: String(
+                      form.get('address') ||
+                        existingProj?.address ||
+                        matchedClient?.address ||
+                        'ul. Słoneczna 10, Warszawa'
+                    ),
                     notes: String(form.get('description') || ''),
+                    checklist: checklistObj,
                   };
                   const snap = await DataLayer.saveInstallation(p, currentUser.name, currentRole);
                   applySnapshot(snap);
@@ -2771,10 +3172,10 @@ export default function App() {
                   };
                   const snap = await DataLayer.saveLead(t, currentUser.name);
                   applySnapshot(snap);
-                  if (statusVal === 'Umowa podpisana (Wygrana)') {
+                  if (isSignedLeadStatus(statusVal)) {
                     setModal(null);
                     notify(
-                      'Umowa podpisana! Automatycznie utworzono obiekt w Realizacje OZE oraz wniosek w Dotacje i OSD.'
+                      'Podpisana umowa! Utworzono obiekt w Realizacje OZE (Audyt i projekt), wpis w Dotacje i OSD (W przygotowaniu) oraz zadanie dla Managera: wyznacz ekipę.'
                     );
                     return;
                   }
@@ -3107,162 +3508,261 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    {/* Built-in OZE Power & Battery Calculator for Salesmen and Managers */}
+                    {/* Built-in OZE Power & Battery Calculator for Salesmen and Managers (Step 4) */}
                     {(modal === 'Zadanie' || modal === 'Realizacja') && (
                       <div className="form-grid">
                         <label>
-                          Kalkulator: Rachunek za prąd (PLN/mies.)
+                          Kalkulator OZE: Rachunek klienta za prąd (PLN/mies.)
                           <input
                             type="number"
+                            min={50}
+                            step={50}
                             value={billPln}
                             onChange={e => recalculateFromBill(Number(e.target.value) || 0)}
                           />
                         </label>
                         <label>
-                          Dobrana moc PV (kWp) + Magazyn (kWh)
+                          Dobrana moc PV (kWp) + Pojemność magazynu (kWh)
                           <input
                             readOnly
-                            value={`${calcKwp} kWp + ${calcKwh} kWh (~${(
-                              Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
-                            ).toLocaleString('pl-PL')} PLN)`}
+                            value={`${calcKwp} kWp PV + ${calcKwh} kWh BESS`}
                           />
+                        </label>
+                        <label>
+                          Orientacyjna cena umowy brutto (PLN)
+                          <input
+                            readOnly
+                            value={`${(
+                              Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
+                            ).toLocaleString('pl-PL')} PLN (Dotacja: do ${
+                              calcKwp <= 20 ? '23 000' : '0'
+                            } PLN)`}
+                          />
+                        </label>
+                        <label>
+                          Szybki dobór z rachunku (kliknij kwotę)
+                          <div className="quick-actions" style={{ margin: 0 }}>
+                            {[300, 450, 750, 1400].map(preset => (
+                              <Button
+                                key={preset}
+                                type="button"
+                                onClick={() => recalculateFromBill(preset)}
+                              >
+                                {preset} zł
+                              </Button>
+                            ))}
+                          </div>
                         </label>
                       </div>
                     )}
 
                     {modal === 'Realizacja' ? (
-                      <div className="form-grid">
-                        <label>
-                          Inwestor / Klient <span>*</span>
-                          <select
-                            name="client"
-                            defaultValue={
-                              editing && 'client' in editing
-                                ? editing.client
-                                : clientDetail?.name || roleScopedClients[0]?.name
-                            }
-                          >
-                            {clients.map(c => (
-                              <option key={c.id}>{c.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Typ systemu OZE
-                          <select
-                            name="systemType"
-                            defaultValue={
-                              editing && 'systemType' in editing ? editing.systemType : 'PV + Magazyn energii'
-                            }
-                          >
-                            <option>PV + Magazyn energii</option>
-                            <option>Dom pasywny + Pompa + PV</option>
-                            <option>Dom energooszczędny + PV</option>
-                            <option>Fotowoltaika B2B + BESS</option>
-                            <option>Magazyn energii (Rozbudowa)</option>
-                          </select>
-                        </label>
-                        <label>
-                          Moc instalacji PV (kWp)
-                          <input
-                            name="powerKwp"
-                            type="number"
-                            step="0.1"
-                            value={calcKwp}
-                            onChange={e => setCalcKwp(Number(e.target.value))}
-                          />
-                        </label>
-                        <label>
-                          Pojemność magazynu (kWh)
-                          <input
-                            name="batteryKwh"
-                            type="number"
-                            step="1"
-                            value={calcKwh}
-                            onChange={e => setCalcKwh(Number(e.target.value))}
-                          />
-                        </label>
-                        <label>
-                          Operator sieci (OSD)
-                          <select
-                            name="osdOperator"
-                            defaultValue={editing && 'osdOperator' in editing ? editing.osdOperator : 'PGE'}
-                          >
-                            {osdOperators.map(osd => (
-                              <option key={osd}>{osd}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Program dotacji
-                          <select
-                            name="subsidyProgram"
-                            defaultValue={
-                              editing && 'subsidyProgram' in editing
-                                ? editing.subsidyProgram
-                                : settings.defaultSubsidy
-                            }
-                          >
-                            {subsidyPrograms.map(prog => (
-                              <option key={prog}>{prog}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Poszycie dachu / Konstrukcja
-                          <select
-                            name="roofType"
-                            defaultValue={
-                              editing && 'roofType' in editing ? editing.roofType : 'Dachówka ceramiczna'
-                            }
-                          >
-                            {roofTypes.map(r => (
-                              <option key={r}>{r}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Brygada monterska
-                          <select
-                            name="installTeam"
-                            defaultValue={
-                              editing && 'installTeam' in editing ? editing.installTeam : 'Ekipa Mazowsze-1'
-                            }
-                          >
-                            <option>Ekipa Mazowsze-1</option>
-                            <option>Ekipa Małopolska-2</option>
-                            <option>Ekipa Wielkopolska-1</option>
-                            <option>Ekipa Śląsk-3</option>
-                            <option>Ekipa Pomorze-1</option>
-                          </select>
-                        </label>
-                        <label>
-                          Województwo
-                          <select
-                            name="voivodeship"
-                            defaultValue={
-                              editing && 'voivodeship' in editing ? editing.voivodeship : 'Mazowieckie'
-                            }
-                          >
-                            {polishVoivodeships.map(v => (
-                              <option key={v}>{v}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Wartość umowy brutto (PLN)
-                          <input
-                            name="contractValue"
-                            defaultValue={
-                              editing && 'contractValue' in editing
-                                ? editing.contractValue
-                                : `${(
-                                    Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
-                                  ).toLocaleString('pl-PL')} PLN`
-                            }
-                          />
-                        </label>
-                      </div>
+                      <>
+                        <div className="form-grid">
+                          <label>
+                            Inwestor / Klient <span>*</span>
+                            <select
+                              name="client"
+                              defaultValue={
+                                editing && 'client' in editing
+                                  ? editing.client
+                                  : clientDetail?.name || roleScopedClients[0]?.name
+                              }
+                            >
+                              {clients.map(c => (
+                                <option key={c.id}>{c.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Adres montażu inwestycji
+                            <input
+                              name="address"
+                              defaultValue={
+                                editing && 'address' in editing && editing.address
+                                  ? editing.address
+                                  : clientDetail?.address || 'ul. Słoneczna 14, 05-800 Pruszków'
+                              }
+                              placeholder="ul. Słoneczna 14, Miasto"
+                            />
+                          </label>
+                          <label>
+                            Typ systemu OZE
+                            <select
+                              name="systemType"
+                              defaultValue={
+                                editing && 'systemType' in editing
+                                  ? editing.systemType
+                                  : 'PV + Magazyn energii'
+                              }
+                            >
+                              <option>PV + Magazyn energii</option>
+                              <option>Dom pasywny + Pompa + PV</option>
+                              <option>Dom energooszczędny + PV</option>
+                              <option>Fotowoltaika B2B + BESS</option>
+                              <option>Magazyn energii (Rozbudowa)</option>
+                            </select>
+                          </label>
+                          <label>
+                            Moc instalacji PV (kWp)
+                            <input
+                              name="powerKwp"
+                              type="number"
+                              step="0.1"
+                              value={calcKwp}
+                              onChange={e => setCalcKwp(Number(e.target.value))}
+                            />
+                          </label>
+                          <label>
+                            Pojemność magazynu (kWh)
+                            <input
+                              name="batteryKwh"
+                              type="number"
+                              step="1"
+                              value={calcKwh}
+                              onChange={e => setCalcKwh(Number(e.target.value))}
+                            />
+                          </label>
+                          <label>
+                            Operator sieci (OSD)
+                            <select
+                              name="osdOperator"
+                              defaultValue={
+                                editing && 'osdOperator' in editing ? editing.osdOperator : 'PGE'
+                              }
+                            >
+                              {osdOperators.map(osd => (
+                                <option key={osd}>{osd}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Program dotacji
+                            <select
+                              name="subsidyProgram"
+                              defaultValue={
+                                editing && 'subsidyProgram' in editing
+                                  ? editing.subsidyProgram
+                                  : settings.defaultSubsidy
+                              }
+                            >
+                              {subsidyPrograms.map(prog => (
+                                <option key={prog}>{prog}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Poszycie dachu / Konstrukcja
+                            <select
+                              name="roofType"
+                              defaultValue={
+                                editing && 'roofType' in editing
+                                  ? editing.roofType
+                                  : 'Dachówka ceramiczna'
+                              }
+                            >
+                              {roofTypes.map(r => (
+                                <option key={r}>{r}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Brygada monterska
+                            <select
+                              name="installTeam"
+                              defaultValue={
+                                editing && 'installTeam' in editing
+                                  ? editing.installTeam
+                                  : 'Ekipa Mazowsze-1'
+                              }
+                            >
+                              <option>Do wyznaczenia (Manager)</option>
+                              <option>Ekipa Mazowsze-1</option>
+                              <option>Ekipa Małopolska-2</option>
+                              <option>Ekipa Wielkopolska-1</option>
+                              <option>Ekipa Śląsk-3</option>
+                              <option>Ekipa Pomorze-1</option>
+                            </select>
+                          </label>
+                          <label>
+                            Województwo
+                            <select
+                              name="voivodeship"
+                              defaultValue={
+                                editing && 'voivodeship' in editing
+                                  ? editing.voivodeship
+                                  : 'Mazowieckie'
+                              }
+                            >
+                              {polishVoivodeships.map(v => (
+                                <option key={v}>{v}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Wartość umowy brutto (PLN)
+                            <input
+                              name="contractValue"
+                              defaultValue={
+                                editing && 'contractValue' in editing
+                                  ? editing.contractValue
+                                  : `${(
+                                      Math.round((calcKwp * 3800 + calcKwh * 2100) / 100) * 100
+                                    ).toLocaleString('pl-PL')} PLN`
+                              }
+                            />
+                          </label>
+                        </div>
+
+                        {/* Manager Readiness Checklist inside the Installation modal (Step 4) */}
+                        {(() => {
+                          const existingChk =
+                            editing && 'powerKwp' in editing
+                              ? getProjectChecklist(editing)
+                              : {
+                                  inverterReady: false,
+                                  panelsReady: false,
+                                  batteryReady: false,
+                                  osdSubmitted: false,
+                                };
+                          return (
+                            <div className="form-grid">
+                              <label className="checkbox-label">
+                                <input
+                                  type="checkbox"
+                                  name="chk_inverter"
+                                  defaultChecked={existingChk.inverterReady}
+                                />
+                                Checklista Managera: Falownik hybrydowy skompletowany
+                              </label>
+                              <label className="checkbox-label">
+                                <input
+                                  type="checkbox"
+                                  name="chk_panels"
+                                  defaultChecked={existingChk.panelsReady}
+                                />
+                                Checklista Managera: Moduły PV i konstrukcja gotowe
+                              </label>
+                              <label className="checkbox-label">
+                                <input
+                                  type="checkbox"
+                                  name="chk_battery"
+                                  defaultChecked={existingChk.batteryReady}
+                                />
+                                Checklista Managera: Magazyn energii BESS skompletowany
+                              </label>
+                              <label className="checkbox-label">
+                                <input
+                                  type="checkbox"
+                                  name="chk_osd"
+                                  defaultChecked={existingChk.osdSubmitted}
+                                />
+                                Checklista Managera: Zgłoszenie złożone w PGE/Tauron/Enea/Energa
+                              </label>
+                            </div>
+                          );
+                        })()}
+                      </>
                     ) : (
                       modal === 'Zadanie' && (
                         <div className="form-grid">

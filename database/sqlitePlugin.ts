@@ -38,10 +38,28 @@ function ensureSchemaMigrations(db: DatabaseSync) {
   };
 
   safeAlter("ALTER TABLE installations ADD COLUMN notes TEXT NOT NULL DEFAULT '';");
+  safeAlter("ALTER TABLE installations ADD COLUMN address TEXT NOT NULL DEFAULT '';");
+  safeAlter(
+    'ALTER TABLE installations ADD COLUMN checklist_json TEXT NOT NULL DEFAULT \'{"inverterReady":false,"panelsReady":false,"batteryReady":false,"osdSubmitted":false}\';'
+  );
   safeAlter("ALTER TABLE leads ADD COLUMN notes TEXT NOT NULL DEFAULT '';");
   safeAlter("ALTER TABLE calendar_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'Montaż';");
   safeAlter("ALTER TABLE calendar_events ADD COLUMN client TEXT NOT NULL DEFAULT '';");
   safeAlter('ALTER TABLE calendar_events ADD COLUMN installation_id INTEGER;');
+
+  // Backfill empty installation addresses from matching clients
+  try {
+    db.exec(`
+      UPDATE installations
+      SET address = COALESCE(
+        (SELECT address FROM clients WHERE clients.name = installations.client LIMIT 1),
+        ''
+      )
+      WHERE address = '';
+    `);
+  } catch {
+    // Ignore if clients table not ready
+  }
 }
 
 // Synchronize each client's `projects` count with actual installations in SQLite
@@ -135,10 +153,16 @@ export function seedIfEmpty(db: DatabaseSync, forceReset = false) {
       INSERT INTO installations (
         id, name, client, manager, status, priority, start_date, deadline, progress,
         color, initials, system_type, power_kwp, battery_kwh, osd_operator,
-        subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, address, notes, checklist_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const p of initialProjects) {
+      const defaultChecklist = p.checklist || {
+        inverterReady: p.progress >= 45,
+        panelsReady: p.progress >= 45,
+        batteryReady: p.progress >= 70,
+        osdSubmitted: p.subsidyStatus !== 'W przygotowaniu',
+      };
       insertInst.run(
         p.id,
         p.name,
@@ -161,7 +185,9 @@ export function seedIfEmpty(db: DatabaseSync, forceReset = false) {
         p.contractValue,
         p.installTeam,
         p.voivodeship,
-        p.notes || ''
+        p.address || '',
+        p.notes || '',
+        JSON.stringify(defaultChecklist)
       );
     }
   }
@@ -291,30 +317,57 @@ export function getBootstrapSnapshot(db: DatabaseSync) {
     : employees;
 
   const instRows = db.prepare('SELECT * FROM installations ORDER BY id DESC').all() as Record<string, unknown>[];
-  const projects: Project[] = instRows.map(r => ({
-    id: Number(r.id),
-    name: String(r.name),
-    client: String(r.client),
-    manager: String(r.manager),
-    status: String(r.status),
-    priority: String(r.priority),
-    start: String(r.start_date),
-    deadline: String(r.deadline),
-    progress: Number(r.progress),
-    color: String(r.color),
-    initials: String(r.initials),
-    systemType: String(r.system_type),
-    powerKwp: Number(r.power_kwp),
-    batteryKwh: Number(r.battery_kwh),
-    osdOperator: String(r.osd_operator) as Project['osdOperator'],
-    subsidyProgram: String(r.subsidy_program) as Project['subsidyProgram'],
-    subsidyStatus: String(r.subsidy_status) as Project['subsidyStatus'],
-    roofType: String(r.roof_type) as Project['roofType'],
-    contractValue: String(r.contract_value),
-    installTeam: String(r.install_team),
-    voivodeship: String(r.voivodeship),
-    notes: r.notes ? String(r.notes) : '',
-  }));
+  const projects: Project[] = instRows.map(r => {
+    const progressNum = Number(r.progress);
+    const subStatus = String(r.subsidy_status) as Project['subsidyStatus'];
+    let parsedChecklist: Project['checklist'] = {
+      inverterReady: progressNum >= 45,
+      panelsReady: progressNum >= 45,
+      batteryReady: progressNum >= 70,
+      osdSubmitted: subStatus !== 'W przygotowaniu',
+    };
+    if (r.checklist_json && typeof r.checklist_json === 'string') {
+      try {
+        const rawObj = JSON.parse(r.checklist_json);
+        if (rawObj && typeof rawObj === 'object') {
+          parsedChecklist = {
+            inverterReady: Boolean(rawObj.inverterReady),
+            panelsReady: Boolean(rawObj.panelsReady),
+            batteryReady: Boolean(rawObj.batteryReady),
+            osdSubmitted: Boolean(rawObj.osdSubmitted),
+          };
+        }
+      } catch {
+        // Use fallback checklist
+      }
+    }
+    return {
+      id: Number(r.id),
+      name: String(r.name),
+      client: String(r.client),
+      manager: String(r.manager),
+      status: String(r.status),
+      priority: String(r.priority),
+      start: String(r.start_date),
+      deadline: String(r.deadline),
+      progress: progressNum,
+      color: String(r.color),
+      initials: String(r.initials),
+      systemType: String(r.system_type),
+      powerKwp: Number(r.power_kwp),
+      batteryKwh: Number(r.battery_kwh),
+      osdOperator: String(r.osd_operator) as Project['osdOperator'],
+      subsidyProgram: String(r.subsidy_program) as Project['subsidyProgram'],
+      subsidyStatus: subStatus,
+      roofType: String(r.roof_type) as Project['roofType'],
+      contractValue: String(r.contract_value),
+      installTeam: String(r.install_team),
+      voivodeship: String(r.voivodeship),
+      address: r.address ? String(r.address) : '',
+      notes: r.notes ? String(r.notes) : '',
+      checklist: parsedChecklist,
+    };
+  });
 
   const leadRows = db.prepare('SELECT * FROM leads ORDER BY id DESC').all() as Record<string, unknown>[];
   const tasks: Task[] = leadRows.map(r => ({
@@ -576,12 +629,21 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
             return;
           }
 
+          const checklistStr = JSON.stringify(
+            p.checklist || {
+              inverterReady: p.progress >= 45,
+              panelsReady: p.progress >= 45,
+              batteryReady: p.progress >= 70,
+              osdSubmitted: p.subsidyStatus !== 'W przygotowaniu',
+            }
+          );
+
           const stmt = database.prepare(`
             INSERT INTO installations (
               id, name, client, manager, status, priority, start_date, deadline, progress,
               color, initials, system_type, power_kwp, battery_kwh, osd_operator,
-              subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, address, notes, checklist_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               client = excluded.client,
@@ -600,7 +662,9 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
               contract_value = excluded.contract_value,
               install_team = excluded.install_team,
               voivodeship = excluded.voivodeship,
-              notes = excluded.notes
+              address = excluded.address,
+              notes = excluded.notes,
+              checklist_json = excluded.checklist_json
           `);
           stmt.run(
             p.id,
@@ -624,7 +688,9 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
             p.contractValue,
             p.installTeam,
             p.voivodeship,
-            p.notes || ''
+            p.address || '',
+            p.notes || '',
+            checklistStr
           );
 
           // Automatically update client status in SQLite based on installation stage
@@ -705,20 +771,29 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
           // Automated Lead-to-Installation Funnel Trigger (controlled by SQLite settings.autoConvertLead)
           if (
             settings.autoConvertLead &&
-            (t.status === 'Umowa podpisana (Wygrana)' || t.status === 'Zrealizowane')
+            (t.status === 'Podpisana umowa' ||
+              t.status === 'Umowa podpisana (Wygrana)' ||
+              t.status === 'Zrealizowane')
           ) {
             const convertedName = t.name.replace(/^Lead(\s*B2B|\s*D2D)?:\s*/i, '');
             const existing = database
               .prepare('SELECT id FROM installations WHERE name = ?')
               .get(convertedName) as { id?: number } | undefined;
 
-            if (!existing) {
+            if (!existing && !t.name.startsWith('Zadanie dla Managera:')) {
               const { powerKwp, batteryKwh } = parsePowerAndBattery(t.estimatedPower);
               const clientRow = database
                 .prepare('SELECT * FROM clients WHERE name = ? LIMIT 1')
                 .get(t.project) as Record<string, unknown> | undefined;
               const osdOp = clientRow?.osd ? String(clientRow.osd) : 'PGE';
               const voiv = clientRow?.voivodeship ? String(clientRow.voivodeship) : 'Mazowieckie';
+              const addr = clientRow?.address
+                ? String(clientRow.address)
+                : `ul. Słoneczna 10, ${voiv}`;
+              const managerRow = database
+                .prepare("SELECT name FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1")
+                .get() as { name?: string } | undefined;
+              const assignedManager = managerRow?.name || 'Jakub Młynarski';
               const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
               const newInstId = Date.now();
               const today = new Date();
@@ -727,20 +802,26 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
               const startStr = formatPlShortDate(today);
               const deadlineStr = formatPlShortDate(deadlineDate);
               const auditIso = auditDate.toISOString().slice(0, 10);
+              const initialChecklistJson = JSON.stringify({
+                inverterReady: false,
+                panelsReady: false,
+                batteryReady: false,
+                osdSubmitted: false,
+              });
 
               database
                 .prepare(
                   `INSERT INTO installations (
                     id, name, client, manager, status, priority, start_date, deadline, progress,
                     color, initials, system_type, power_kwp, battery_kwh, osd_operator,
-                    subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, notes
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, address, notes, checklist_json
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 )
                 .run(
                   newInstId,
                   convertedName,
                   t.project,
-                  t.assignee,
+                  assignedManager,
                   'Audyt i projekt',
                   t.priority,
                   startStr,
@@ -756,15 +837,42 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                   'W przygotowaniu',
                   'Dachówka ceramiczna',
                   `${estPrice.toLocaleString('pl-PL')} PLN`,
-                  'Ekipa Mazowsze-1',
+                  'Do wyznaczenia (Manager)',
                   voiv,
-                  t.notes || 'Automatycznie utworzono po podpisaniu umowy handlowej.'
+                  addr,
+                  t.notes || `Automatycznie utworzono po podpisaniu umowy (${addr}, OSD: ${osdOp}).`,
+                  initialChecklistJson
                 );
 
               // Update client status to 'W realizacji'
               database
                 .prepare('UPDATE clients SET status = ? WHERE name = ?')
                 .run('W realizacji', t.project);
+
+              // Create automatic task for Manager to assign installation team
+              const managerTaskName = `Zadanie dla Managera: Wyznacz ekipę montażową — ${convertedName}`;
+              const existingMgrTask = database
+                .prepare('SELECT id FROM leads WHERE name = ?')
+                .get(managerTaskName) as { id?: number } | undefined;
+              if (!existingMgrTask) {
+                database
+                  .prepare(
+                    `INSERT INTO leads (id, name, project, priority, due, status, assignee, lead_source, estimated_power, notes)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                  )
+                  .run(
+                    newInstId + 1,
+                    managerTaskName,
+                    t.project,
+                    'Pilny',
+                    'Dzisiaj',
+                    'Audyt / W toku',
+                    assignedManager,
+                    'Auto-Trigger (Podpisana umowa)',
+                    `${powerKwp} kWp + ${batteryKwh} kWh`,
+                    `Adres montażu: ${addr} (${voiv}) · Operator OSD: ${osdOp}. Wyznacz brygadę i zweryfikuj kompletację.`
+                  );
+              }
 
               // Create automatic technical audit event in calendar_events
               database
@@ -785,7 +893,7 @@ function createSqliteMiddleware(getDb: () => DatabaseSync) {
                 )
                 .run(
                   t.actor || t.assignee,
-                  'podpisał umowę — automatycznie utworzono realizację OZE i wniosek dotacyjny',
+                  `podpisał umowę — utworzono obiekt w Realizacje OZE, wniosek OSD (${osdOp}) oraz zadanie dla Managera (${assignedManager})`,
                   convertedName,
                   'Przed chwilą',
                   'green'

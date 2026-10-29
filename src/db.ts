@@ -235,7 +235,7 @@ export const DataLayer = {
 
     const current = getLocalFallbackSnapshot();
     const exists = current.tasks.some(x => x.id === task.id);
-    const tasks = exists
+    let tasks = exists
       ? current.tasks.map(x => (x.id === task.id ? task : x))
       : [task, ...current.tasks];
 
@@ -245,13 +245,18 @@ export const DataLayer = {
 
     if (
       current.settings.autoConvertLead &&
-      (task.status === 'Umowa podpisana (Wygrana)' || task.status === 'Zrealizowane')
+      (task.status === 'Podpisana umowa' ||
+        task.status === 'Umowa podpisana (Wygrana)' ||
+        task.status === 'Zrealizowane')
     ) {
       const convertedName = task.name.replace(/^Lead(\s*B2B|\s*D2D)?:\s*/i, '');
       const alreadyExists = projects.some(p => p.name === convertedName);
-      if (!alreadyExists) {
+      if (!alreadyExists && !task.name.startsWith('Zadanie dla Managera:')) {
         const { powerKwp, batteryKwh } = parsePowerAndBattery(task.estimatedPower);
         const clientMatch = current.clients.find(c => c.name === task.project);
+        const assignedManager =
+          current.users.find(u => u.systemRole === 'manager')?.name || 'Jakub Młynarski';
+        const addr = clientMatch?.address || 'ul. Słoneczna 10, Warszawa';
         const estPrice = Math.round((powerKwp * 3800 + batteryKwh * 2100) / 100) * 100;
         const newInstId = Date.now();
         const today = new Date();
@@ -261,7 +266,7 @@ export const DataLayer = {
           id: newInstId,
           name: convertedName,
           client: task.project,
-          manager: task.assignee,
+          manager: assignedManager,
           status: 'Audyt i projekt',
           priority: task.priority,
           start: formatPlShortDate(today),
@@ -277,14 +282,43 @@ export const DataLayer = {
           subsidyStatus: 'W przygotowaniu',
           roofType: 'Dachówka ceramiczna',
           contractValue: `${estPrice.toLocaleString('pl-PL')} PLN`,
-          installTeam: 'Ekipa Mazowsze-1',
+          installTeam: 'Do wyznaczenia (Manager)',
           voivodeship: clientMatch?.voivodeship || 'Mazowieckie',
-          notes: task.notes || 'Automatycznie utworzono po podpisaniu umowy handlowej.',
+          address: addr,
+          notes:
+            task.notes ||
+            `Automatycznie utworzono po podpisaniu umowy (${addr}, OSD: ${clientMatch?.osd || 'PGE'}).`,
+          checklist: {
+            inverterReady: false,
+            panelsReady: false,
+            batteryReady: false,
+            osdSubmitted: false,
+          },
         };
         projects = [newInstallation, ...projects];
+
+        const managerTaskName = `Zadanie dla Managera: Wyznacz ekipę montażową — ${convertedName}`;
+        if (!tasks.some(x => x.name === managerTaskName)) {
+          tasks = [
+            {
+              id: newInstId + 1,
+              name: managerTaskName,
+              project: task.project,
+              priority: 'Pilny',
+              due: 'Dzisiaj',
+              status: 'Audyt / W toku',
+              assignee: assignedManager,
+              leadSource: 'Auto-Trigger (Podpisana umowa)',
+              estimatedPower: `${powerKwp} kWp + ${batteryKwh} kWh`,
+              notes: `Adres montażu: ${addr} · Operator OSD: ${clientMatch?.osd || 'PGE'}. Wyznacz brygadę i zweryfikuj kompletację.`,
+            },
+            ...tasks,
+          ];
+        }
+
         events = [
           {
-            id: Date.now() + 1,
+            id: Date.now() + 2,
             name: `Audyt przedmontażowy: ${task.project}`,
             date: auditDate.toISOString().slice(0, 10),
             eventType: 'Audyt',
@@ -293,7 +327,7 @@ export const DataLayer = {
           },
           ...events,
         ];
-        actionMessage = 'podpisał umowę — automatycznie utworzono realizację OZE i wniosek dotacyjny';
+        actionMessage = `podpisał umowę — utworzono obiekt w Realizacje OZE, wniosek OSD oraz zadanie dla Managera (${assignedManager})`;
       }
     }
 

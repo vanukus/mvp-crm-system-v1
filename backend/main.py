@@ -66,6 +66,13 @@ app.add_middleware(
 # ============================================================================
 
 
+class ReadinessChecklist(BaseModel):
+    inverterReady: bool = False
+    panelsReady: bool = False
+    batteryReady: bool = False
+    osdSubmitted: bool = False
+
+
 class InstallationPayload(BaseModel):
     id: int
     name: str
@@ -88,7 +95,9 @@ class InstallationPayload(BaseModel):
     contractValue: str = "58 400 PLN"
     installTeam: str = "Ekipa Mazowsze-1"
     voivodeship: str = "Mazowieckie"
+    address: Optional[str] = ""
     notes: Optional[str] = ""
+    checklist: Optional[ReadinessChecklist] = None
     actor: Optional[str] = None
     actorRole: Optional[SystemRole] = "admin"
 
@@ -201,6 +210,8 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
 
     alter_statements = [
         "ALTER TABLE installations ADD COLUMN notes TEXT NOT NULL DEFAULT '';",
+        "ALTER TABLE installations ADD COLUMN address TEXT NOT NULL DEFAULT '';",
+        'ALTER TABLE installations ADD COLUMN checklist_json TEXT NOT NULL DEFAULT \'{"inverterReady":false,"panelsReady":false,"batteryReady":false,"osdSubmitted":false}\';',
         "ALTER TABLE leads ADD COLUMN notes TEXT NOT NULL DEFAULT '';",
         "ALTER TABLE calendar_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'Montaż';",
         "ALTER TABLE calendar_events ADD COLUMN client TEXT NOT NULL DEFAULT '';",
@@ -418,33 +429,57 @@ def build_bootstrap_snapshot(conn: sqlite3.Connection) -> dict[str, Any]:
         for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()
     ]
 
-    projects = [
-        {
-            "id": int(r["id"]),
-            "name": r["name"],
-            "client": r["client"],
-            "manager": r["manager"],
-            "status": r["status"],
-            "priority": r["priority"],
-            "start": r["start_date"],
-            "deadline": r["deadline"],
-            "progress": int(r["progress"]),
-            "color": r["color"],
-            "initials": r["initials"],
-            "systemType": r["system_type"],
-            "powerKwp": float(r["power_kwp"]),
-            "batteryKwh": float(r["battery_kwh"]),
-            "osdOperator": r["osd_operator"],
-            "subsidyProgram": r["subsidy_program"],
-            "subsidyStatus": r["subsidy_status"],
-            "roofType": r["roof_type"],
-            "contractValue": r["contract_value"],
-            "installTeam": r["install_team"],
-            "voivodeship": r["voivodeship"],
-            "notes": r["notes"] or "",
+    projects = []
+    for r in conn.execute("SELECT * FROM installations ORDER BY id DESC").fetchall():
+        prog_num = int(r["progress"])
+        sub_st = r["subsidy_status"]
+        chk = {
+            "inverterReady": prog_num >= 45,
+            "panelsReady": prog_num >= 45,
+            "batteryReady": prog_num >= 70,
+            "osdSubmitted": sub_st != "W przygotowaniu",
         }
-        for r in conn.execute("SELECT * FROM installations ORDER BY id DESC").fetchall()
-    ]
+        raw_chk = r["checklist_json"] if "checklist_json" in r.keys() else None
+        if raw_chk:
+            try:
+                parsed = json.loads(raw_chk)
+                if isinstance(parsed, dict):
+                    chk = {
+                        "inverterReady": bool(parsed.get("inverterReady", False)),
+                        "panelsReady": bool(parsed.get("panelsReady", False)),
+                        "batteryReady": bool(parsed.get("batteryReady", False)),
+                        "osdSubmitted": bool(parsed.get("osdSubmitted", False)),
+                    }
+            except Exception:
+                pass
+        projects.append(
+            {
+                "id": int(r["id"]),
+                "name": r["name"],
+                "client": r["client"],
+                "manager": r["manager"],
+                "status": r["status"],
+                "priority": r["priority"],
+                "start": r["start_date"],
+                "deadline": r["deadline"],
+                "progress": prog_num,
+                "color": r["color"],
+                "initials": r["initials"],
+                "systemType": r["system_type"],
+                "powerKwp": float(r["power_kwp"]),
+                "batteryKwh": float(r["battery_kwh"]),
+                "osdOperator": r["osd_operator"],
+                "subsidyProgram": r["subsidy_program"],
+                "subsidyStatus": sub_st,
+                "roofType": r["roof_type"],
+                "contractValue": r["contract_value"],
+                "installTeam": r["install_team"],
+                "voivodeship": r["voivodeship"],
+                "address": r["address"] if "address" in r.keys() and r["address"] else "",
+                "notes": r["notes"] or "",
+                "checklist": chk,
+            }
+        )
 
     tasks = [
         {
@@ -621,13 +656,23 @@ def api_save_installation(p: InstallationPayload) -> dict[str, Any]:
         )
 
     with get_connection() as conn:
+        chk_dict = (
+            p.checklist.dict()
+            if p.checklist is not None
+            else {
+                "inverterReady": p.progress >= 45,
+                "panelsReady": p.progress >= 45,
+                "batteryReady": p.progress >= 70,
+                "osdSubmitted": p.subsidyStatus != "W przygotowaniu",
+            }
+        )
         conn.execute(
             """
             INSERT INTO installations (
                 id, name, client, manager, status, priority, start_date, deadline, progress,
                 color, initials, system_type, power_kwp, battery_kwh, osd_operator,
-                subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, address, notes, checklist_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 client = excluded.client,
@@ -646,7 +691,9 @@ def api_save_installation(p: InstallationPayload) -> dict[str, Any]:
                 contract_value = excluded.contract_value,
                 install_team = excluded.install_team,
                 voivodeship = excluded.voivodeship,
-                notes = excluded.notes
+                address = excluded.address,
+                notes = excluded.notes,
+                checklist_json = excluded.checklist_json
             """,
             (
                 p.id,
@@ -670,7 +717,9 @@ def api_save_installation(p: InstallationPayload) -> dict[str, Any]:
                 p.contractValue,
                 p.installTeam,
                 p.voivodeship,
+                p.address or "",
                 p.notes or "",
+                json.dumps(chk_dict),
             ),
         )
 
@@ -753,13 +802,17 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
 
         settings = read_settings(conn)
 
-        if settings["autoConvertLead"] and t.status in ("Umowa podpisana (Wygrana)", "Zrealizowane"):
+        if settings["autoConvertLead"] and t.status in (
+            "Podpisana umowa",
+            "Umowa podpisana (Wygrana)",
+            "Zrealizowane",
+        ):
             converted_name = re.sub(r"^Lead(\s*B2B|\s*D2D)?:\s*", "", t.name, flags=re.IGNORECASE)
             existing = conn.execute(
                 "SELECT id FROM installations WHERE name = ?", (converted_name,)
             ).fetchone()
 
-            if not existing:
+            if not existing and not t.name.startswith("Zadanie dla Managera:"):
                 power_kwp, battery_kwh = parse_power_and_battery(t.estimatedPower)
                 client_row = conn.execute(
                     "SELECT * FROM clients WHERE name = ? LIMIT 1", (t.project,)
@@ -770,6 +823,15 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                     if client_row and client_row["voivodeship"]
                     else "Mazowieckie"
                 )
+                addr = (
+                    client_row["address"]
+                    if client_row and client_row["address"]
+                    else f"ul. Słoneczna 10, {voiv}"
+                )
+                mgr_row = conn.execute(
+                    "SELECT name FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1"
+                ).fetchone()
+                assigned_mgr = mgr_row["name"] if mgr_row else "Jakub Młynarski"
                 est_price = int(round((power_kwp * 3800 + battery_kwh * 2100) / 100.0) * 100)
                 formatted_price = f"{est_price:,}".replace(",", " ") + " PLN"
                 new_inst_id = int(t.id) + 1000
@@ -777,20 +839,28 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                 start_str = format_pl_date(today_date)
                 deadline_str = format_pl_date(today_date + timedelta(days=30))
                 audit_iso = (today_date + timedelta(days=2)).isoformat()
+                init_chk = json.dumps(
+                    {
+                        "inverterReady": False,
+                        "panelsReady": False,
+                        "batteryReady": False,
+                        "osdSubmitted": False,
+                    }
+                )
 
                 conn.execute(
                     """
                     INSERT INTO installations (
                         id, name, client, manager, status, priority, start_date, deadline, progress,
                         color, initials, system_type, power_kwp, battery_kwh, osd_operator,
-                        subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        subsidy_program, subsidy_status, roof_type, contract_value, install_team, voivodeship, address, notes, checklist_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_inst_id,
                         converted_name,
                         t.project,
-                        t.assignee,
+                        assigned_mgr,
                         "Audyt i projekt",
                         t.priority,
                         start_str,
@@ -806,15 +876,42 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                         "W przygotowaniu",
                         "Dachówka ceramiczna",
                         formatted_price,
-                        "Ekipa Mazowsze-1",
+                        "Do wyznaczenia (Manager)",
                         voiv,
-                        t.notes or "Automatycznie utworzono w Python FastAPI po podpisaniu umowy.",
+                        addr,
+                        t.notes
+                        or f"Automatycznie utworzono po podpisaniu umowy ({addr}, OSD: {osd_op}).",
+                        init_chk,
                     ),
                 )
 
                 conn.execute(
                     "UPDATE clients SET status = ? WHERE name = ?", ("W realizacji", t.project)
                 )
+
+                mgr_task_name = f"Zadanie dla Managera: Wyznacz ekipę montażową — {converted_name}"
+                existing_mgr_task = conn.execute(
+                    "SELECT id FROM leads WHERE name = ?", (mgr_task_name,)
+                ).fetchone()
+                if not existing_mgr_task:
+                    conn.execute(
+                        """
+                        INSERT INTO leads (id, name, project, priority, due, status, assignee, lead_source, estimated_power, notes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_inst_id + 1,
+                            mgr_task_name,
+                            t.project,
+                            "Pilny",
+                            "Dzisiaj",
+                            "Audyt / W toku",
+                            assigned_mgr,
+                            "Auto-Trigger (Podpisana umowa)",
+                            f"{power_kwp} kWp + {battery_kwh} kWh",
+                            f"Adres montażu: {addr} ({voiv}) · Operator OSD: {osd_op}. Wyznacz brygadę i zweryfikuj kompletację.",
+                        ),
+                    )
 
                 conn.execute(
                     """
@@ -837,7 +934,7 @@ def api_save_lead(t: LeadPayload) -> dict[str, Any]:
                     """,
                     (
                         t.actor or t.assignee,
-                        "podpisał umowę — FastAPI utworzyło realizację OZE i wniosek dotacyjny",
+                        f"podpisał umowę — utworzono obiekt w Realizacje OZE, wniosek OSD ({osd_op}) oraz zadanie dla Managera ({assigned_mgr})",
                         converted_name,
                         "Przed chwilą",
                         "green",

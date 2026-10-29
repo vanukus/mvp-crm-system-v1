@@ -13,6 +13,13 @@ export type Employee = {
   region: string;
 };
 
+export type ReadinessChecklist = {
+  inverterReady: boolean;
+  panelsReady: boolean;
+  batteryReady: boolean;
+  osdSubmitted: boolean;
+};
+
 export type Project = {
   id: number;
   name: string;
@@ -36,7 +43,9 @@ export type Project = {
   contractValue: string;
   installTeam: string;
   voivodeship: string;
+  address?: string;
   notes?: string;
+  checklist?: ReadinessChecklist;
 };
 
 export type Task = {
@@ -126,7 +135,14 @@ export const initialProjects: Project[] = [
     contractValue: '58 400 PLN',
     installTeam: 'Ekipa Mazowsze-1',
     voivodeship: 'Mazowieckie',
+    address: 'ul. Słoneczna 14, 05-800 Pruszków',
     notes: 'Falownik hybrydowy 10kW z modułem EPS (zasilanie awaryjne), dachówka ceramiczna kąt 35°.',
+    checklist: {
+      inverterReady: true,
+      panelsReady: true,
+      batteryReady: true,
+      osdSubmitted: false,
+    },
   },
   {
     id: 2,
@@ -150,7 +166,14 @@ export const initialProjects: Project[] = [
     contractValue: '112 000 PLN',
     installTeam: 'Ekipa Małopolska-2',
     voivodeship: 'Małopolskie',
+    address: 'ul. Zielona 8, 32-020 Wieliczka',
     notes: 'Pompa ciepła powietrze-woda 9kW + bufor CWU 300L + instalacja PV na blachodachówce.',
+    checklist: {
+      inverterReady: true,
+      panelsReady: true,
+      batteryReady: false,
+      osdSubmitted: false,
+    },
   },
   {
     id: 3,
@@ -174,7 +197,14 @@ export const initialProjects: Project[] = [
     contractValue: '214 500 PLN',
     installTeam: 'Ekipa Wielkopolska-1',
     voivodeship: 'Wielkopolskie',
+    address: 'ul. Przemysłowa 42, 62-020 Swarzędz',
     notes: 'Konstrukcja gruntowa dwupodporowa, uzgodnienie ppoż. rzeczoznawcy zakończone.',
+    checklist: {
+      inverterReady: true,
+      panelsReady: true,
+      batteryReady: true,
+      osdSubmitted: true,
+    },
   },
   {
     id: 4,
@@ -198,7 +228,14 @@ export const initialProjects: Project[] = [
     contractValue: '42 000 PLN',
     installTeam: 'Ekipa Pomorze-1',
     voivodeship: 'Pomorskie',
+    address: 'ul. Nadmorska 21, 80-500 Gdańsk',
     notes: 'Rozbudowa istniejącej mikroinstalacji PV o magazyn LUNA2000 20 kWh.',
+    checklist: {
+      inverterReady: false,
+      panelsReady: true,
+      batteryReady: false,
+      osdSubmitted: false,
+    },
   },
   {
     id: 5,
@@ -222,7 +259,14 @@ export const initialProjects: Project[] = [
     contractValue: '86 900 PLN',
     installTeam: 'Ekipa Śląsk-3',
     voivodeship: 'Śląskie',
+    address: 'ul. Brzozowa 5, 40-100 Katowice',
     notes: 'Wniosek z prefinansowaniem WFOŚiGW Katowice — II próg dochodowy.',
+    checklist: {
+      inverterReady: true,
+      panelsReady: false,
+      batteryReady: false,
+      osdSubmitted: false,
+    },
   },
   {
     id: 6,
@@ -246,7 +290,14 @@ export const initialProjects: Project[] = [
     contractValue: '46 500 PLN',
     installTeam: 'Ekipa Mazowsze-1',
     voivodeship: 'Mazowieckie',
+    address: 'ul. Leśna 3, 05-120 Legionowo',
     notes: 'Licznik dwukierunkowy PGE zamontowany, protokół PZO podpisany bez uwag.',
+    checklist: {
+      inverterReady: true,
+      panelsReady: true,
+      batteryReady: true,
+      osdSubmitted: true,
+    },
   },
 ];
 

@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS installations (
   contract_value TEXT NOT NULL,
   install_team TEXT NOT NULL,
   voivodeship TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
+  checklist_json TEXT NOT NULL DEFAULT '{"inverterReady":false,"panelsReady":false,"batteryReady":false,"osdSubmitted":false}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
