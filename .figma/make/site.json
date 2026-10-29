@@ -1,0 +1,12 @@
+{
+  "title": "SM-OZE Polska — System CRM & FSM dla Fotowoltaiki, Magazynów Energii i Domów Pasywnych",
+  "description": "System operacyjny CRM + FSM dla firm OZE w Polsce: lejek sprzedaży, audyty techniczne, montaże PV i magazynów energii, dotacje Mój Prąd / Czyste Powietrze oraz zgłoszenia OSD.",
+  "language": "pl",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
